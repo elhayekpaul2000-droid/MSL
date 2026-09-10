@@ -9,7 +9,8 @@ GROUP_LOW       = "Low Levels & Zones"
 GROUP_LABELS    = "Labels"
 
 // ─── Lifecycle ───
-maxAgeBars = input.int(120, "Max Level Age (Bars)", minval = 1, maxval = 5000, group = GROUP_LIFECYCLE, tooltip = "A registered high/low (line, zone, label) is fully deleted once it is older than this many bars.")
+maxAgeBars    = input.int(120, "Max Level Age (Bars)", minval = 1, maxval = 5000, group = GROUP_LIFECYCLE, tooltip = "A registered high/low (line, zone, label) is fully deleted once it is older than this many bars.")
+zoneProjBars  = input.int(20, "Zone Forward Projection (Bars)", minval = 1, maxval = 500, group = GROUP_LIFECYCLE, tooltip = "A sweep zone always ends this many bars ahead of the current candle.")
 
 // ─── Display toggles ───
 showLevelLines = input.bool(true, "Show Registered Level Lines", group = GROUP_DISPLAY)
@@ -154,18 +155,19 @@ if array.size(hLevel) > 0
             array.remove(hOrigin, i)
         else
             ln2 = array.get(hLine, i)
-            if not na(ln2)
+            if not na(ln2) and not swept
+                // level line freezes at the candle that closes the sweep
                 line.set_x2(ln2, bar_index)
             if not swept and bull0 and high > H and close < H
                 box newBox = na
                 if showZones
-                    newBox := box.new(left = bar_index, top = high, right = bar_index, bottom = close, border_color = highZoneBorder, border_width = highZoneBorderWidth, border_style = f_style(highZoneBorderStyleInput), bgcolor = highZoneColor)
+                    newBox := box.new(left = bar_index, top = high, right = bar_index + zoneProjBars, bottom = close, border_color = highZoneBorder, border_width = highZoneBorderWidth, border_style = f_style(highZoneBorderStyleInput), bgcolor = highZoneColor)
                 array.set(hBox, i, newBox)
                 array.set(hSwept, i, true)
             else if swept
                 bx = array.get(hBox, i)
                 if not na(bx)
-                    box.set_right(bx, bar_index)
+                    box.set_right(bx, bar_index + zoneProjBars)
 
 // ─── Process low levels: sweep, kill, or expire ───
 if array.size(lLevel) > 0
@@ -193,15 +195,16 @@ if array.size(lLevel) > 0
             array.remove(lOrigin, i)
         else
             ln2 = array.get(lLine, i)
-            if not na(ln2)
+            if not na(ln2) and not swept
+                // level line freezes at the candle that closes the sweep
                 line.set_x2(ln2, bar_index)
             if not swept and bear0 and low < L and close > L
                 box newBox = na
                 if showZones
-                    newBox := box.new(left = bar_index, top = close, right = bar_index, bottom = low, border_color = lowZoneBorder, border_width = lowZoneBorderWidth, border_style = f_style(lowZoneBorderStyleInput), bgcolor = lowZoneColor)
+                    newBox := box.new(left = bar_index, top = close, right = bar_index + zoneProjBars, bottom = low, border_color = lowZoneBorder, border_width = lowZoneBorderWidth, border_style = f_style(lowZoneBorderStyleInput), bgcolor = lowZoneColor)
                 array.set(lBox, i, newBox)
                 array.set(lSwept, i, true)
             else if swept
                 bx = array.get(lBox, i)
                 if not na(bx)
-                    box.set_right(bx, bar_index)
+                    box.set_right(bx, bar_index + zoneProjBars)
