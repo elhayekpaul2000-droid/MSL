@@ -7,111 +7,188 @@ indicator(
 )
 
 //──────────────────────────────────────────────────────────────────────
-// Groups
+// Model structure
+//
+//   Layer A · Price / Trend        EMA stack, BB %B, structure, HTF
+//   Layer B · Transacted data      volume profile, true delta, VWAP
+//   Layer C · Positioning          open interest vs price
+//   Layer D · Context              breadth, intermarket, rel. strength
+//
+// Components are averaged inside their layer, then layers are averaged
+// into the final score. A component whose data feed is unavailable is
+// dropped and the remaining weights renormalise, so the score is never
+// diluted by a silent zero.
 //──────────────────────────────────────────────────────────────────────
 
-const string GROUP_MODEL  = "Bias Model"
-const string GROUP_EMA    = "1 · EMA Stack"
-const string GROUP_VWAP   = "2 · VWAP"
-const string GROUP_VP     = "3 · Volume Profile"
-const string GROUP_BB     = "4 · Bollinger Bands"
-const string GROUP_VOL    = "5 · Volume Pressure"
-const string GROUP_STRUCT = "6 · Market Structure"
-const string GROUP_HTF    = "7 · Higher Timeframe"
-const string GROUP_DASH   = "Dashboard"
-const string GROUP_PLOTS  = "Chart Plots"
-const string GROUP_ALERTS = "Alerts"
+const string G_MODEL  = "Bias Model"
+const string G_ADAPT  = "Adaptive Weighting"
+const string G_LAYER  = "Layer Weights"
+const string G_PRICE  = "A · Price / Trend"
+const string G_DATA   = "B · Transacted Data"
+const string G_POS    = "C · Positioning (Open Interest)"
+const string G_CTX    = "D · Context / Intermarket"
+const string G_DASH   = "Dashboard"
+const string G_PLOTS  = "Chart Plots"
+const string G_ALERTS = "Alerts"
 
 //──────────────────────────────────────────────────────────────────────
 // Model inputs
 //──────────────────────────────────────────────────────────────────────
 
-int smoothLen = input.int(
-     3,
-     "Score smoothing (EMA bars)",
-     minval = 1,
-     maxval = 50,
-     group = GROUP_MODEL,
-     tooltip = "1 = raw score, higher = fewer bias flips."
+int smoothLen = input.int(3, "Score smoothing (EMA bars)", minval = 1, maxval = 50, group = G_MODEL)
+float biasTh   = input.float(20.0, "Bias threshold",        minval = 5.0,  maxval = 60.0, step = 1.0, group = G_MODEL)
+float strongTh = input.float(55.0, "Strong bias threshold", minval = 20.0, maxval = 95.0, step = 1.0, group = G_MODEL)
+
+bool nonRepaint = input.bool(
+     true,
+     "Non-repainting external data",
+     group = G_MODEL,
+     tooltip = "Uses the last CLOSED bar of every requested feed (HTF, OI, breadth, intermarket). Off = faster reaction, values can change intrabar."
 )
 
-float biasTh = input.float(
-     20.0,
-     "Bias threshold",
-     minval = 5.0,
-     maxval = 60.0,
-     step = 1.0,
-     group = GROUP_MODEL,
-     tooltip = "Score must exceed this (±) to call a directional bias."
-)
-
-float strongTh = input.float(
-     55.0,
-     "Strong bias threshold",
-     minval = 20.0,
-     maxval = 95.0,
-     step = 1.0,
-     group = GROUP_MODEL
-)
-
-color colBull = input.color(color.new(#26a69a, 0), "Bullish colour", group = GROUP_MODEL, inline = "cols")
-color colBear = input.color(color.new(#ef5350, 0), "Bearish", group = GROUP_MODEL, inline = "cols")
-color colNeut = input.color(color.new(#787b86, 0), "Neutral", group = GROUP_MODEL, inline = "cols")
+color colBull = input.color(color.new(#26a69a, 0), "Bullish", group = G_MODEL, inline = "c")
+color colBear = input.color(color.new(#ef5350, 0), "Bearish", group = G_MODEL, inline = "c")
+color colNeut = input.color(color.new(#787b86, 0), "Neutral", group = G_MODEL, inline = "c")
 
 //──────────────────────────────────────────────────────────────────────
-// Component inputs
+// Adaptive weighting
 //──────────────────────────────────────────────────────────────────────
 
-bool useEma = input.bool(true, "Enabled", group = GROUP_EMA, inline = "e0")
-int  wEma   = input.int(20, "Weight", minval = 0, maxval = 100, group = GROUP_EMA, inline = "e0")
-int  emaFastLen = input.int(21,  "Fast", minval = 2, group = GROUP_EMA, inline = "e1")
-int  emaMidLen  = input.int(50,  "Mid",  minval = 2, group = GROUP_EMA, inline = "e1")
-int  emaSlowLen = input.int(200, "Slow", minval = 2, group = GROUP_EMA, inline = "e1")
-int  emaSlopeLen = input.int(10, "Slow EMA slope lookback", minval = 1, group = GROUP_EMA)
+bool useAdapt = input.bool(
+     true,
+     "Weight components by measured edge",
+     group = G_ADAPT,
+     tooltip = "Correlates each component's PAST score against the return that actually followed it. Components that have been predictive on this symbol get up-weighted, ones that have not get cut. No lookahead."
+)
 
-bool useVwap = input.bool(true, "Enabled", group = GROUP_VWAP, inline = "v0")
-int  wVwap   = input.int(15, "Weight", minval = 0, maxval = 100, group = GROUP_VWAP, inline = "v0")
-string vwapAnchorTf = input.string("Session", "Anchor", options = ["Session", "Week", "Month"], group = GROUP_VWAP)
-float vwapMult = input.float(1.0, "Band σ", minval = 0.1, step = 0.1, group = GROUP_VWAP)
+int adaptFwd = input.int(20,  "Return horizon (bars)", minval = 2,   maxval = 200,  group = G_ADAPT)
+int adaptLen = input.int(500, "Measurement window",    minval = 100, maxval = 5000, group = G_ADAPT)
+float adaptBlend = input.float(
+     50.0,
+     "Adaptation strength %",
+     minval = 0.0,
+     maxval = 100.0,
+     step = 5.0,
+     group = G_ADAPT,
+     tooltip = "0 = fixed weights only. 100 = weights swing between 0.1x and 2x of the set weight."
+)
 
-bool useVp = input.bool(true, "Enabled", group = GROUP_VP, inline = "p0")
-int  wVp   = input.int(20, "Weight", minval = 0, maxval = 100, group = GROUP_VP, inline = "p0")
-int  vpLookback = input.int(200, "Lookback bars", minval = 20, maxval = 500, group = GROUP_VP)
-int  vpRows     = input.int(24,  "Rows",          minval = 8,  maxval = 100, group = GROUP_VP)
-float vpVaPct   = input.float(70.0, "Value area %", minval = 30.0, maxval = 95.0, step = 1.0, group = GROUP_VP)
-int  vpRefresh  = input.int(5, "Rebuild every N bars", minval = 1, maxval = 50, group = GROUP_VP, tooltip = "Higher = lighter on resources.")
+//──────────────────────────────────────────────────────────────────────
+// Layer weights
+//──────────────────────────────────────────────────────────────────────
 
-bool useBb = input.bool(true, "Enabled", group = GROUP_BB, inline = "b0")
-int  wBb   = input.int(15, "Weight", minval = 0, maxval = 100, group = GROUP_BB, inline = "b0")
-int  bbLen = input.int(20, "Length", minval = 2, group = GROUP_BB, inline = "b1")
-float bbMult = input.float(2.0, "StdDev", minval = 0.5, step = 0.1, group = GROUP_BB, inline = "b1")
+int wLayerA = input.int(25, "A · Price / Trend",   minval = 0, maxval = 100, group = G_LAYER)
+int wLayerB = input.int(35, "B · Transacted data", minval = 0, maxval = 100, group = G_LAYER)
+int wLayerC = input.int(15, "C · Positioning",     minval = 0, maxval = 100, group = G_LAYER)
+int wLayerD = input.int(25, "D · Context",         minval = 0, maxval = 100, group = G_LAYER)
 
-bool useVol = input.bool(true, "Enabled", group = GROUP_VOL, inline = "n0")
-int  wVol   = input.int(20, "Weight", minval = 0, maxval = 100, group = GROUP_VOL, inline = "n0")
-int  volLookback = input.int(20, "Delta lookback", minval = 2, group = GROUP_VOL)
-int  obvLen = input.int(20, "OBV slope lookback", minval = 1, group = GROUP_VOL)
+//──────────────────────────────────────────────────────────────────────
+// A · Price / Trend
+//──────────────────────────────────────────────────────────────────────
 
-bool useStruct = input.bool(true, "Enabled", group = GROUP_STRUCT, inline = "s0")
-int  wStruct   = input.int(10, "Weight", minval = 0, maxval = 100, group = GROUP_STRUCT, inline = "s0")
-int  pivLen    = input.int(5, "Pivot strength", minval = 1, maxval = 50, group = GROUP_STRUCT)
+bool useEma = input.bool(true, "EMA stack", group = G_PRICE, inline = "a1")
+int  wEma   = input.int(40, "w", minval = 0, maxval = 100, group = G_PRICE, inline = "a1")
+int  emaFastLen  = input.int(21,  "Fast", minval = 2, group = G_PRICE, inline = "a2")
+int  emaMidLen   = input.int(50,  "Mid",  minval = 2, group = G_PRICE, inline = "a2")
+int  emaSlowLen  = input.int(200, "Slow", minval = 2, group = G_PRICE, inline = "a2")
+int  emaSlopeLen = input.int(10, "Slow EMA slope lookback", minval = 1, group = G_PRICE)
 
-bool useHtf = input.bool(true, "Enabled", group = GROUP_HTF, inline = "h0")
-int  wHtf   = input.int(15, "Weight", minval = 0, maxval = 100, group = GROUP_HTF, inline = "h0")
-string htfTf = input.timeframe("240", "Timeframe", group = GROUP_HTF)
-int htfFastLen = input.int(21, "Fast EMA", minval = 2, group = GROUP_HTF, inline = "h1")
-int htfSlowLen = input.int(50, "Slow EMA", minval = 2, group = GROUP_HTF, inline = "h1")
+bool useBb = input.bool(true, "Bollinger %B", group = G_PRICE, inline = "a3")
+int  wBb   = input.int(25, "w", minval = 0, maxval = 100, group = G_PRICE, inline = "a3")
+int  bbLen   = input.int(20, "Length", minval = 2, group = G_PRICE, inline = "a4")
+float bbMult = input.float(2.0, "StdDev", minval = 0.5, step = 0.1, group = G_PRICE, inline = "a4")
 
-bool showDash = input.bool(true, "Show dashboard", group = GROUP_DASH)
-string dashPos = input.string("Top right", "Position", options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group = GROUP_DASH)
-string dashSize = input.string("Normal", "Text size", options = ["Tiny", "Small", "Normal", "Large"], group = GROUP_DASH)
+bool useStruct = input.bool(true, "Market structure", group = G_PRICE, inline = "a5")
+int  wStruct   = input.int(20, "w", minval = 0, maxval = 100, group = G_PRICE, inline = "a5")
+int  pivLen    = input.int(5, "Pivot strength", minval = 1, maxval = 50, group = G_PRICE)
 
-bool colorBars  = input.bool(true,  "Colour price bars by bias", group = GROUP_PLOTS)
-bool showEmas   = input.bool(false, "Plot EMAs on chart",        group = GROUP_PLOTS)
-bool showVwapPl = input.bool(false, "Plot VWAP + bands",         group = GROUP_PLOTS)
-bool showBbPl   = input.bool(false, "Plot Bollinger Bands",      group = GROUP_PLOTS)
-bool showVaPl   = input.bool(false, "Plot POC / value area",     group = GROUP_PLOTS)
+bool useHtf = input.bool(true, "HTF trend", group = G_PRICE, inline = "a6")
+int  wHtf   = input.int(15, "w", minval = 0, maxval = 100, group = G_PRICE, inline = "a6")
+string htfTf   = input.timeframe("240", "Timeframe", group = G_PRICE)
+int htfFastLen = input.int(21, "HTF fast EMA", minval = 2, group = G_PRICE, inline = "a7")
+int htfSlowLen = input.int(50, "HTF slow EMA", minval = 2, group = G_PRICE, inline = "a7")
 
-bool alertFlips = input.bool(true, "Fire alert() on bias flips", group = GROUP_ALERTS)
+//──────────────────────────────────────────────────────────────────────
+// B · Transacted data
+//──────────────────────────────────────────────────────────────────────
+
+bool useVp = input.bool(true, "Volume profile", group = G_DATA, inline = "b1")
+int  wVp   = input.int(35, "w", minval = 0, maxval = 100, group = G_DATA, inline = "b1")
+int  vpLookback = input.int(200, "Lookback bars", minval = 20, maxval = 500, group = G_DATA)
+int  vpRows     = input.int(24,  "Rows", minval = 8, maxval = 100, group = G_DATA, inline = "b2")
+float vpVaPct   = input.float(70.0, "Value area %", minval = 30.0, maxval = 95.0, step = 1.0, group = G_DATA, inline = "b2")
+int  vpRefresh  = input.int(5, "Rebuild every N bars", minval = 1, maxval = 50, group = G_DATA)
+
+bool useDelta = input.bool(true, "Volume delta (true intrabar)", group = G_DATA, inline = "b3")
+int  wDelta   = input.int(40, "w", minval = 0, maxval = 100, group = G_DATA, inline = "b3")
+string ltfMode = input.string("Auto", "Intrabar resolution", options = ["Auto", "Manual"], group = G_DATA, inline = "b4")
+string ltfManual = input.timeframe("1", "", group = G_DATA, inline = "b4")
+int deltaLookback = input.int(20, "Delta lookback bars", minval = 2, group = G_DATA)
+bool useDeltaDiv = input.bool(true, "Penalise price / delta divergence", group = G_DATA)
+
+bool useVwap = input.bool(true, "VWAP", group = G_DATA, inline = "b5")
+int  wVwap   = input.int(25, "w", minval = 0, maxval = 100, group = G_DATA, inline = "b5")
+string vwapAnchorTf = input.string("Session", "Anchor", options = ["Session", "Week", "Month"], group = G_DATA, inline = "b6")
+float vwapMult = input.float(1.0, "σ", minval = 0.1, step = 0.1, group = G_DATA, inline = "b6")
+
+//──────────────────────────────────────────────────────────────────────
+// C · Positioning
+//──────────────────────────────────────────────────────────────────────
+
+bool useOi = input.bool(
+     true,
+     "Open interest vs price",
+     group = G_POS,
+     tooltip = "Futures and perps only. Price up + OI up = new longs. Price up + OI down = short covering (weak). Silently drops out on symbols with no OI feed."
+)
+int oiLen  = input.int(10,  "Change lookback", minval = 1, maxval = 200, group = G_POS)
+int oiNorm = input.int(100, "Normalisation window", minval = 20, maxval = 1000, group = G_POS)
+
+//──────────────────────────────────────────────────────────────────────
+// D · Context / Intermarket
+//──────────────────────────────────────────────────────────────────────
+
+int ctxRoc  = input.int(10,  "Momentum lookback", minval = 1, maxval = 200, group = G_CTX)
+int ctxNorm = input.int(100, "Normalisation window", minval = 20, maxval = 1000, group = G_CTX)
+
+bool useBreadthNet = input.bool(true, "Breadth (net)", group = G_CTX, inline = "d1")
+int  wBreadthNet   = input.int(30, "w", minval = 0, maxval = 100, group = G_CTX, inline = "d1")
+string breadthNetSym = input.symbol("USI:ADD", "", group = G_CTX, inline = "d1")
+
+bool useBreadthPct = input.bool(true, "Breadth (% above MA)", group = G_CTX, inline = "d2")
+int  wBreadthPct   = input.int(25, "w", minval = 0, maxval = 100, group = G_CTX, inline = "d2")
+string breadthPctSym = input.symbol("S5FI", "", group = G_CTX, inline = "d2")
+
+bool useInter = input.bool(true, "Intermarket basket", group = G_CTX, inline = "d3")
+int  wInter   = input.int(25, "w", minval = 0, maxval = 100, group = G_CTX, inline = "d3")
+string interSym1 = input.symbol("TVC:DXY",   "1", group = G_CTX, inline = "d4")
+bool   interInv1 = input.bool(true, "Inverse", group = G_CTX, inline = "d4")
+string interSym2 = input.symbol("TVC:VIX",   "2", group = G_CTX, inline = "d5")
+bool   interInv2 = input.bool(true, "Inverse", group = G_CTX, inline = "d5")
+string interSym3 = input.symbol("TVC:US10Y", "3", group = G_CTX, inline = "d6")
+bool   interInv3 = input.bool(true, "Inverse", group = G_CTX, inline = "d6")
+
+bool useRs = input.bool(true, "Relative strength", group = G_CTX, inline = "d7")
+int  wRs   = input.int(20, "w", minval = 0, maxval = 100, group = G_CTX, inline = "d7")
+string rsSym = input.symbol("SPY", "", group = G_CTX, inline = "d7", tooltip = "Benchmark to measure this symbol against. SPY for US equities, BINANCE:BTCUSDT for alts, DXY for FX crosses.")
+
+//──────────────────────────────────────────────────────────────────────
+// Display
+//──────────────────────────────────────────────────────────────────────
+
+bool showDash = input.bool(true, "Show dashboard", group = G_DASH)
+string dashPos  = input.string("Top right", "Position", options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group = G_DASH)
+string dashSize = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal", "Large"], group = G_DASH)
+bool showWeights = input.bool(true, "Show live weights", group = G_DASH)
+
+bool showLayers = input.bool(false, "Plot layer scores in pane", group = G_PLOTS)
+bool colorBars  = input.bool(true,  "Colour price bars by bias", group = G_PLOTS)
+bool showEmas   = input.bool(false, "Plot EMAs on chart",   group = G_PLOTS)
+bool showVwapPl = input.bool(false, "Plot VWAP + bands",    group = G_PLOTS)
+bool showBbPl   = input.bool(false, "Plot Bollinger Bands", group = G_PLOTS)
+bool showVaPl   = input.bool(false, "Plot POC / value area", group = G_PLOTS)
+
+bool alertFlips = input.bool(true, "Fire alert() on bias flips", group = G_ALERTS)
 
 //──────────────────────────────────────────────────────────────────────
 // Helpers
@@ -120,17 +197,34 @@ bool alertFlips = input.bool(true, "Fire alert() on bias flips", group = GROUP_A
 f_clamp(float v, float lo, float hi) =>
     math.max(lo, math.min(hi, v))
 
+f_z(float src, int len) =>
+    float m  = ta.sma(src, len)
+    float sd = ta.stdev(src, len)
+    sd > 0 ? (src - m) / sd : 0.0
+
+f_ctx(float src, int rocLen, int normLen, bool inverse) =>
+    float r = ta.roc(src, rocLen)
+    float z = f_z(r, normLen)
+    float s = f_clamp(z / 2.0, -1.0, 1.0)
+    na(src) ? na : (inverse ? -s : s)
+
+f_edge(float s, float ret, int fwd, int len, bool on, float blend) =>
+    float c = nz(ta.correlation(s[fwd], ret, len))
+    float m = 1.0 + (blend / 100.0) * f_clamp(c * 2.0, -1.0, 1.0)
+    on ? math.max(m, 0.1) : 1.0
+
 f_txt(float s) =>
-    s >= 0.15 ? "Bullish" : s <= -0.15 ? "Bearish" : "Neutral"
+    na(s) ? "n/a" : s >= 0.15 ? "Bullish" : s <= -0.15 ? "Bearish" : "Neutral"
 
 f_col(float s) =>
-    s >= 0.15 ? colBull : s <= -0.15 ? colBear : colNeut
+    na(s) ? colNeut : s >= 0.15 ? colBull : s <= -0.15 ? colBear : colNeut
 
+int repOff = nonRepaint ? 1 : 0
 float safeVol = na(volume) ? 0.0 : volume
 float barRng  = math.max(high - low, syminfo.mintick)
 
 //──────────────────────────────────────────────────────────────────────
-// 1 · EMA stack
+// A1 · EMA stack
 //──────────────────────────────────────────────────────────────────────
 
 float emaF = ta.ema(close, emaFastLen)
@@ -143,36 +237,58 @@ int emaBear = (close < emaF ? 1 : 0) + (emaF < emaM ? 1 : 0) + (emaM < emaS ? 1 
 float sEma = (emaBull - emaBear) / 4.0
 
 //──────────────────────────────────────────────────────────────────────
-// 2 · Anchored VWAP with σ bands (computed manually so volume-less
-//     symbols degrade gracefully instead of erroring)
+// A2 · Bollinger %B
 //──────────────────────────────────────────────────────────────────────
 
-bool anchorNew = vwapAnchorTf == "Week" ? timeframe.change("W") : vwapAnchorTf == "Month" ? timeframe.change("M") : timeframe.change("D")
-
-var float cumPV  = 0.0
-var float cumPV2 = 0.0
-var float cumV   = 0.0
-
-if anchorNew or bar_index == 0
-    cumPV  := 0.0
-    cumPV2 := 0.0
-    cumV   := 0.0
-
-float vwapSrc = hlc3
-cumPV  += vwapSrc * safeVol
-cumPV2 += vwapSrc * vwapSrc * safeVol
-cumV   += safeVol
-
-float vwapVal = cumV > 0 ? cumPV / cumV : na
-float vwapVar = cumV > 0 ? math.max(cumPV2 / cumV - vwapVal * vwapVal, 0.0) : na
-float vwapSd  = na(vwapVar) ? na : math.sqrt(vwapVar) * vwapMult
-float vwapUp  = vwapVal + vwapSd
-float vwapDn  = vwapVal - vwapSd
-
-float sVwap = na(vwapVal) ? 0.0 : f_clamp((close - vwapVal) / math.max(vwapSd, syminfo.mintick), -1.0, 1.0)
+float bbBasis = ta.sma(close, bbLen)
+float bbDev   = bbMult * ta.stdev(close, bbLen)
+float bbUp    = bbBasis + bbDev
+float bbDn    = bbBasis - bbDev
+float pctB    = (close - bbDn) / math.max(bbUp - bbDn, syminfo.mintick)
+float bbWidth = (bbUp - bbDn) / math.max(math.abs(bbBasis), syminfo.mintick)
+bool  bbExpanding = bbWidth > bbWidth[1]
+float sBb = f_clamp((pctB - 0.5) * 2.0, -1.0, 1.0) * (bbExpanding ? 1.0 : 0.6)
 
 //──────────────────────────────────────────────────────────────────────
-// 3 · Volume profile (POC / value area over a rolling window)
+// A3 · Market structure
+//──────────────────────────────────────────────────────────────────────
+
+float ph = ta.pivothigh(high, pivLen, pivLen)
+float pl = ta.pivotlow(low, pivLen, pivLen)
+
+var float lastPH = na
+var float prevPH = na
+var float lastPL = na
+var float prevPL = na
+
+if not na(ph)
+    prevPH := lastPH
+    lastPH := ph
+if not na(pl)
+    prevPL := lastPL
+    lastPL := pl
+
+bool hh = not na(lastPH) and not na(prevPH) and lastPH > prevPH
+bool lh = not na(lastPH) and not na(prevPH) and lastPH < prevPH
+bool hl = not na(lastPL) and not na(prevPL) and lastPL > prevPL
+bool ll = not na(lastPL) and not na(prevPL) and lastPL < prevPL
+float sStruct = ((hh ? 1 : 0) + (hl ? 1 : 0) - (lh ? 1 : 0) - (ll ? 1 : 0)) / 2.0
+
+//──────────────────────────────────────────────────────────────────────
+// A4 · Higher timeframe trend
+//──────────────────────────────────────────────────────────────────────
+
+[htfClose, htfFast, htfSlow] = request.security(
+     syminfo.tickerid,
+     htfTf,
+     [close[repOff], ta.ema(close, htfFastLen)[repOff], ta.ema(close, htfSlowLen)[repOff]],
+     lookahead = barmerge.lookahead_off
+)
+
+float sHtf = na(htfFast) or na(htfSlow) ? na : ((htfClose > htfFast ? 1 : 0) + (htfFast > htfSlow ? 1 : 0) - (htfClose < htfFast ? 1 : 0) - (htfFast < htfSlow ? 1 : 0)) / 2.0
+
+//──────────────────────────────────────────────────────────────────────
+// B1 · Volume profile (POC / value area)
 //──────────────────────────────────────────────────────────────────────
 
 float vpHi = ta.highest(high, vpLookback)
@@ -203,7 +319,7 @@ if vpDue and vpHi > vpLo
             maxV := v
             pocIdx := r
 
-    float total = array.sum(vols)
+    float total  = array.sum(vols)
     float target = total * vpVaPct / 100.0
     float acc = array.get(vols, pocIdx)
     int up = pocIdx
@@ -224,7 +340,7 @@ if vpDue and vpHi > vpLo
     vpVah := vpLo + (up + 1) * step
     vpVal := vpLo + dn * step
 
-float sVp = 0.0
+float sVp = na
 if not na(vpPoc)
     if close > vpVah
         sVp := 1.0
@@ -236,96 +352,195 @@ if not na(vpPoc)
         sVp := -0.5 * f_clamp((vpPoc - close) / math.max(vpPoc - vpVal, syminfo.mintick), 0.0, 1.0)
 
 //──────────────────────────────────────────────────────────────────────
-// 4 · Bollinger Bands (%B, weighted by expansion)
+// B2 · True intrabar volume delta (falls back to a proxy if the
+//      lower-timeframe feed is unavailable on this bar)
 //──────────────────────────────────────────────────────────────────────
 
-float bbBasis = ta.sma(close, bbLen)
-float bbDev   = bbMult * ta.stdev(close, bbLen)
-float bbUp    = bbBasis + bbDev
-float bbDn    = bbBasis - bbDev
-float pctB    = (close - bbDn) / math.max(bbUp - bbDn, syminfo.mintick)
-float bbWidth = (bbUp - bbDn) / math.max(math.abs(bbBasis), syminfo.mintick)
-bool  bbExpanding = bbWidth > bbWidth[1]
-float sBb = f_clamp((pctB - 0.5) * 2.0, -1.0, 1.0) * (bbExpanding ? 1.0 : 0.6)
+int chartSec = timeframe.in_seconds(timeframe.period)
+string ltfAuto = chartSec >= 86400 ? "60" : chartSec >= 14400 ? "15" : chartSec >= 3600 ? "5" : "1"
+string ltfRes  = ltfMode == "Auto" ? ltfAuto : ltfManual
 
-//──────────────────────────────────────────────────────────────────────
-// 5 · Volume pressure (intrabar delta proxy + OBV slope)
-//──────────────────────────────────────────────────────────────────────
-
-float buyV  = safeVol * (close - low) / barRng
-float sellV = safeVol * (high - close) / barRng
-float sumBuy  = math.sum(buyV, volLookback)
-float sumSell = math.sum(sellV, volLookback)
-float delta = (sumBuy + sumSell) > 0 ? (sumBuy - sumSell) / (sumBuy + sumSell) : 0.0
-
-var float obvLine = 0.0
-obvLine += math.sign(nz(close - close[1])) * safeVol
-float obvChg = obvLine - obvLine[obvLen]
-float obvNorm = f_clamp(obvChg / math.max(math.sum(safeVol, obvLen), 1.0), -1.0, 1.0)
-
-float sVol = f_clamp(0.7 * delta + 0.3 * obvNorm, -1.0, 1.0)
-
-//──────────────────────────────────────────────────────────────────────
-// 6 · Market structure (HH/HL vs LH/LL)
-//──────────────────────────────────────────────────────────────────────
-
-float ph = ta.pivothigh(high, pivLen, pivLen)
-float pl = ta.pivotlow(low, pivLen, pivLen)
-
-var float lastPH = na
-var float prevPH = na
-var float lastPL = na
-var float prevPL = na
-
-if not na(ph)
-    prevPH := lastPH
-    lastPH := ph
-if not na(pl)
-    prevPL := lastPL
-    lastPL := pl
-
-bool hh = not na(lastPH) and not na(prevPH) and lastPH > prevPH
-bool lh = not na(lastPH) and not na(prevPH) and lastPH < prevPH
-bool hl = not na(lastPL) and not na(prevPL) and lastPL > prevPL
-bool ll = not na(lastPL) and not na(prevPL) and lastPL < prevPL
-float sStruct = ((hh ? 1 : 0) + (hl ? 1 : 0) - (lh ? 1 : 0) - (ll ? 1 : 0)) / 2.0
-
-//──────────────────────────────────────────────────────────────────────
-// 7 · Higher timeframe trend
-//──────────────────────────────────────────────────────────────────────
-
-[htfClose, htfFast, htfSlow] = request.security(
+[ltfC, ltfO, ltfV] = request.security_lower_tf(
      syminfo.tickerid,
-     htfTf,
-     [close, ta.ema(close, htfFastLen), ta.ema(close, htfSlowLen)],
-     lookahead = barmerge.lookahead_off
+     ltfRes,
+     [close, open, volume],
+     ignore_invalid_timeframe = true
 )
 
-float sHtf = na(htfFast) or na(htfSlow) ? 0.0 : ((htfClose > htfFast ? 1 : 0) + (htfFast > htfSlow ? 1 : 0) - (htfClose < htfFast ? 1 : 0) - (htfFast < htfSlow ? 1 : 0)) / 2.0
+float upV = 0.0
+float dnV = 0.0
+int ltfN = array.size(ltfC)
+if ltfN > 0
+    for i = 0 to ltfN - 1
+        float c = array.get(ltfC, i)
+        float o = array.get(ltfO, i)
+        float v = nz(array.get(ltfV, i))
+        if c > o
+            upV += v
+        else if c < o
+            dnV += v
+        else
+            upV += v / 2.0
+            dnV += v / 2.0
+
+bool deltaTrue = ltfN > 0 and (upV + dnV) > 0
+float barDelta = deltaTrue ? upV - dnV : safeVol * ((close - low) - (high - close)) / barRng
+float barVolT  = deltaTrue ? upV + dnV : safeVol
+
+float sumDelta = math.sum(barDelta, deltaLookback)
+float sumVolT  = math.sum(barVolT, deltaLookback)
+float deltaRatio = sumVolT > 0 ? sumDelta / sumVolT : 0.0
+
+var float cvd = 0.0
+cvd += barDelta
+
+bool pxHi  = close >= ta.highest(close, deltaLookback)
+bool cvdHi = cvd   >= ta.highest(cvd,   deltaLookback)
+bool pxLo  = close <= ta.lowest(close, deltaLookback)
+bool cvdLo = cvd   <= ta.lowest(cvd,   deltaLookback)
+float divAdj = not useDeltaDiv ? 0.0 : pxHi and not cvdHi ? -0.35 : pxLo and not cvdLo ? 0.35 : 0.0
+
+float sDelta = barVolT > 0 or deltaTrue ? f_clamp(deltaRatio + divAdj, -1.0, 1.0) : na
 
 //──────────────────────────────────────────────────────────────────────
-// Composite score
+// B3 · Anchored VWAP with σ bands
 //──────────────────────────────────────────────────────────────────────
 
-array<string> compNames = array.from("EMA stack", "VWAP", "Volume profile", "Bollinger %B", "Volume pressure", "Structure", "HTF trend")
-array<float>  compScore = array.from(sEma, sVwap, sVp, sBb, sVol, sStruct, sHtf)
-array<bool>   compOn    = array.from(useEma, useVwap, useVp, useBb, useVol, useStruct, useHtf)
-array<float>  compW     = array.from(float(wEma), float(wVwap), float(wVp), float(wBb), float(wVol), float(wStruct), float(wHtf))
+bool anchorNew = vwapAnchorTf == "Week" ? timeframe.change("W") : vwapAnchorTf == "Month" ? timeframe.change("M") : timeframe.change("D")
 
-float wSum = 0.0
-float raw  = 0.0
-for i = 0 to array.size(compNames) - 1
-    if array.get(compOn, i)
-        float w = array.get(compW, i)
-        wSum += w
-        raw  += w * array.get(compScore, i)
+var float cumPV  = 0.0
+var float cumPV2 = 0.0
+var float cumV   = 0.0
 
-float score    = wSum > 0 ? raw / wSum * 100.0 : 0.0
-float scoreEma = ta.ema(score, smoothLen)
+if anchorNew or bar_index == 0
+    cumPV  := 0.0
+    cumPV2 := 0.0
+    cumV   := 0.0
+
+float vwapSrc = hlc3
+cumPV  += vwapSrc * safeVol
+cumPV2 += vwapSrc * vwapSrc * safeVol
+cumV   += safeVol
+
+float vwapVal = cumV > 0 ? cumPV / cumV : na
+float vwapVar = cumV > 0 ? math.max(cumPV2 / cumV - vwapVal * vwapVal, 0.0) : na
+float vwapSd  = na(vwapVar) ? na : math.sqrt(vwapVar) * vwapMult
+float vwapUp  = vwapVal + vwapSd
+float vwapDn  = vwapVal - vwapSd
+
+float sVwap = na(vwapVal) ? na : f_clamp((close - vwapVal) / math.max(nz(vwapSd), syminfo.mintick), -1.0, 1.0)
+
+//──────────────────────────────────────────────────────────────────────
+// C1 · Open interest vs price
+//──────────────────────────────────────────────────────────────────────
+
+float oiVal = request.security(
+     syminfo.tickerid + "_OI",
+     timeframe.period,
+     close[repOff],
+     lookahead = barmerge.lookahead_off,
+     ignore_invalid_symbol = true
+)
+
+float dOi = not na(oiVal) and not na(oiVal[oiLen]) and oiVal[oiLen] != 0 ? oiVal / oiVal[oiLen] - 1.0 : na
+float dPx = close / close[oiLen] - 1.0
+float oiMag = f_clamp(math.abs(f_z(dPx, oiNorm)) / 2.0, 0.0, 1.0)
+
+float sOi = na(dOi) ? na : dPx > 0 and dOi > 0 ? oiMag : dPx > 0 and dOi <= 0 ? 0.3 * oiMag : dPx < 0 and dOi > 0 ? -oiMag : dPx < 0 and dOi <= 0 ? -0.3 * oiMag : 0.0
+
+//──────────────────────────────────────────────────────────────────────
+// D · Context feeds
+//──────────────────────────────────────────────────────────────────────
+
+float breadthNetRaw = request.security(breadthNetSym, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float breadthPctRaw = request.security(breadthPctSym, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float inter1Raw     = request.security(interSym1, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float inter2Raw     = request.security(interSym2, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float inter3Raw     = request.security(interSym3, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float rsRaw         = request.security(rsSym,     timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+// Net breadth: already zero-centred, so read level and slope
+float bnZ = f_z(nz(breadthNetRaw), ctxNorm)
+float sBreadthNet = na(breadthNetRaw) ? na : f_clamp(0.6 * f_clamp(bnZ / 2.0, -1.0, 1.0) + 0.4 * math.sign(nz(breadthNetRaw)), -1.0, 1.0)
+
+// % above MA: 0..100 scale, 50 is neutral
+float sBreadthPct = na(breadthPctRaw) ? na : f_clamp((breadthPctRaw - 50.0) / 40.0, -1.0, 1.0)
+
+float sInt1 = f_ctx(inter1Raw, ctxRoc, ctxNorm, interInv1)
+float sInt2 = f_ctx(inter2Raw, ctxRoc, ctxNorm, interInv2)
+float sInt3 = f_ctx(inter3Raw, ctxRoc, ctxNorm, interInv3)
+
+float intSum = nz(sInt1) + nz(sInt2) + nz(sInt3)
+int   intCnt = (na(sInt1) ? 0 : 1) + (na(sInt2) ? 0 : 1) + (na(sInt3) ? 0 : 1)
+float sInter = intCnt > 0 ? intSum / intCnt : na
+
+float rsRatio = na(rsRaw) or rsRaw == 0 ? na : close / rsRaw
+float sRs = f_ctx(rsRatio, ctxRoc, ctxNorm, false)
+
+//──────────────────────────────────────────────────────────────────────
+// Measured edge per component
+//──────────────────────────────────────────────────────────────────────
+
+float fwdRet = close[adaptFwd] != 0 ? (close - close[adaptFwd]) / close[adaptFwd] : 0.0
+
+float eEma        = f_edge(nz(sEma),         fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eBb         = f_edge(nz(sBb),          fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eStruct     = f_edge(nz(sStruct),      fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eHtf        = f_edge(nz(sHtf),         fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eVp         = f_edge(nz(sVp),          fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eDelta      = f_edge(nz(sDelta),       fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eVwap       = f_edge(nz(sVwap),        fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eOi         = f_edge(nz(sOi),          fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eBreadthNet = f_edge(nz(sBreadthNet),  fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eBreadthPct = f_edge(nz(sBreadthPct),  fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eInter      = f_edge(nz(sInter),       fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eRs         = f_edge(nz(sRs),          fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+
+//──────────────────────────────────────────────────────────────────────
+// Composite
+//──────────────────────────────────────────────────────────────────────
+
+array<string> cName = array.from("EMA stack", "Bollinger %B", "Structure", "HTF trend", "Volume profile", "Volume delta", "VWAP", "Open interest", "Breadth net", "Breadth % > MA", "Intermarket", "Rel. strength")
+array<float>  cScore = array.from(sEma, sBb, sStruct, sHtf, sVp, sDelta, sVwap, sOi, sBreadthNet, sBreadthPct, sInter, sRs)
+array<bool>   cOn    = array.from(useEma, useBb, useStruct, useHtf, useVp, useDelta, useVwap, useOi, useBreadthNet, useBreadthPct, useInter, useRs)
+array<float>  cW     = array.from(float(wEma), float(wBb), float(wStruct), float(wHtf), float(wVp), float(wDelta), float(wVwap), 100.0, float(wBreadthNet), float(wBreadthPct), float(wInter), float(wRs))
+array<float>  cEdge  = array.from(eEma, eBb, eStruct, eHtf, eVp, eDelta, eVwap, eOi, eBreadthNet, eBreadthPct, eInter, eRs)
+array<int>    cLayer = array.from(0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 3, 3)
+
+array<string> lName = array.from("A · Price / Trend", "B · Transacted data", "C · Positioning", "D · Context")
+array<float>  lW    = array.from(float(wLayerA), float(wLayerB), float(wLayerC), float(wLayerD))
+
+array<float> lNum = array.new<float>(4, 0.0)
+array<float> lDen = array.new<float>(4, 0.0)
+array<float> cLive = array.new<float>(12, 0.0)
+
+for i = 0 to array.size(cName) - 1
+    float s = array.get(cScore, i)
+    if array.get(cOn, i) and not na(s)
+        int   L = array.get(cLayer, i)
+        float w = array.get(cW, i) * array.get(cEdge, i)
+        array.set(cLive, i, w)
+        array.set(lNum, L, array.get(lNum, L) + w * s)
+        array.set(lDen, L, array.get(lDen, L) + w)
+
+array<float> lScore = array.new<float>(4, na)
+float num = 0.0
+float den = 0.0
+for l = 0 to 3
+    if array.get(lDen, l) > 0
+        float ls = array.get(lNum, l) / array.get(lDen, l)
+        array.set(lScore, l, ls)
+        float lw = array.get(lW, l)
+        if lw > 0
+            num += lw * ls
+            den += lw
+
+float score     = den > 0 ? num / den * 100.0 : 0.0
+float scoreEma  = ta.ema(score, smoothLen)
 float biasScore = smoothLen > 1 ? scoreEma : score
 
 int bias = biasScore >= strongTh ? 2 : biasScore >= biasTh ? 1 : biasScore <= -strongTh ? -2 : biasScore <= -biasTh ? -1 : 0
-color biasCol = bias > 0 ? colBull : bias < 0 ? colBear : colNeut
+color biasCol  = bias > 0 ? colBull : bias < 0 ? colBear : colNeut
 string biasTxt = bias == 2 ? "STRONG BULLISH" : bias == 1 ? "BULLISH" : bias == -1 ? "BEARISH" : bias == -2 ? "STRONG BEARISH" : "NEUTRAL"
 
 //──────────────────────────────────────────────────────────────────────
@@ -333,7 +548,12 @@ string biasTxt = bias == 2 ? "STRONG BULLISH" : bias == 1 ? "BULLISH" : bias == 
 //──────────────────────────────────────────────────────────────────────
 
 plot(biasScore, "Bias score", color = color.new(biasCol, 20), style = plot.style_columns)
-plot(score, "Raw score", color = color.new(color.gray, 55), display = display.pane)
+plot(score, "Raw score", color = color.new(color.gray, 55))
+plot(showLayers ? array.get(lScore, 0) * 100 : na, "Layer A", color = color.new(#9c27b0, 40))
+plot(showLayers ? array.get(lScore, 1) * 100 : na, "Layer B", color = color.new(#2962ff, 40))
+plot(showLayers ? array.get(lScore, 2) * 100 : na, "Layer C", color = color.new(#ff9800, 40))
+plot(showLayers ? array.get(lScore, 3) * 100 : na, "Layer D", color = color.new(#00bcd4, 40))
+
 hline(0, "Zero", color = color.new(color.gray, 40))
 hline(biasTh, "Bull threshold", color = color.new(#26a69a, 60), linestyle = hline.style_dotted)
 hline(-biasTh, "Bear threshold", color = color.new(#ef5350, 60), linestyle = hline.style_dotted)
@@ -347,13 +567,13 @@ plot(showEmas ? emaF : na, "EMA fast", color = color.new(#42bda8, 0), force_over
 plot(showEmas ? emaM : na, "EMA mid",  color = color.new(#f5a623, 0), force_overlay = true)
 plot(showEmas ? emaS : na, "EMA slow", color = color.new(#9c27b0, 0), linewidth = 2, force_overlay = true)
 
-plot(showVwapPl ? vwapVal : na, "VWAP", color = color.new(#2962ff, 0), linewidth = 2, force_overlay = true)
-plot(showVwapPl ? vwapUp : na, "VWAP +σ", color = color.new(#2962ff, 55), force_overlay = true)
-plot(showVwapPl ? vwapDn : na, "VWAP -σ", color = color.new(#2962ff, 55), force_overlay = true)
+plot(showVwapPl ? vwapVal : na, "VWAP",   color = color.new(#2962ff, 0), linewidth = 2, force_overlay = true)
+plot(showVwapPl ? vwapUp  : na, "VWAP +σ", color = color.new(#2962ff, 55), force_overlay = true)
+plot(showVwapPl ? vwapDn  : na, "VWAP -σ", color = color.new(#2962ff, 55), force_overlay = true)
 
-plot(showBbPl ? bbUp : na, "BB upper", color = color.new(#787b86, 30), force_overlay = true)
+plot(showBbPl ? bbUp    : na, "BB upper", color = color.new(#787b86, 30), force_overlay = true)
 plot(showBbPl ? bbBasis : na, "BB basis", color = color.new(#787b86, 55), force_overlay = true)
-plot(showBbPl ? bbDn : na, "BB lower", color = color.new(#787b86, 30), force_overlay = true)
+plot(showBbPl ? bbDn    : na, "BB lower", color = color.new(#787b86, 30), force_overlay = true)
 
 plot(showVaPl ? vpPoc : na, "POC", color = color.new(#ff9800, 0), style = plot.style_linebr, linewidth = 2, force_overlay = true)
 plot(showVaPl ? vpVah : na, "VAH", color = color.new(#ff9800, 55), style = plot.style_linebr, force_overlay = true)
@@ -365,8 +585,8 @@ plot(showVaPl ? vpVal : na, "VAL", color = color.new(#ff9800, 55), style = plot.
 
 var table dash = table.new(
      dashPos == "Top right" ? position.top_right : dashPos == "Middle right" ? position.middle_right : dashPos == "Bottom right" ? position.bottom_right : dashPos == "Top left" ? position.top_left : position.bottom_left,
-     3,
-     10,
+     4,
+     22,
      border_width = 1,
      border_color = color.new(color.gray, 70),
      frame_width = 1,
@@ -374,30 +594,48 @@ var table dash = table.new(
 )
 
 string txtSize = dashSize == "Tiny" ? size.tiny : dashSize == "Small" ? size.small : dashSize == "Large" ? size.large : size.normal
+color hdrBg = color.new(color.black, 15)
+color layBg = color.new(color.gray, 80)
 
 if showDash and barstate.islast
-    table.cell(dash, 0, 0, "MSL BIAS", text_color = color.white, bgcolor = color.new(color.black, 20), text_size = txtSize, text_halign = text.align_left)
+    table.cell(dash, 0, 0, "MSL BIAS", text_color = color.white, bgcolor = hdrBg, text_size = txtSize, text_halign = text.align_left)
     table.cell(dash, 1, 0, biasTxt, text_color = color.white, bgcolor = color.new(biasCol, 25), text_size = txtSize)
     table.cell(dash, 2, 0, str.tostring(biasScore, "0.0"), text_color = color.white, bgcolor = color.new(biasCol, 25), text_size = txtSize)
+    table.cell(dash, 3, 0, showWeights ? "wt" : "", text_color = color.new(color.white, 30), bgcolor = hdrBg, text_size = txtSize)
 
     int rowN = 1
-    for i = 0 to array.size(compNames) - 1
-        if array.get(compOn, i)
-            float s = array.get(compScore, i)
-            table.cell(dash, 0, rowN, array.get(compNames, i), text_color = color.new(color.gray, 0), text_size = txtSize, text_halign = text.align_left)
-            table.cell(dash, 1, rowN, f_txt(s), text_color = f_col(s), text_size = txtSize)
-            table.cell(dash, 2, rowN, str.tostring(s * 100, "0") + "%", text_color = f_col(s), text_size = txtSize)
-            rowN := rowN + 1
+    for l = 0 to 3
+        float ls = array.get(lScore, l)
+        table.cell(dash, 0, rowN, array.get(lName, l), text_color = color.new(color.white, 10), bgcolor = layBg, text_size = txtSize, text_halign = text.align_left)
+        table.cell(dash, 1, rowN, f_txt(ls), text_color = f_col(ls), bgcolor = layBg, text_size = txtSize)
+        table.cell(dash, 2, rowN, na(ls) ? "—" : str.tostring(ls * 100, "0"), text_color = f_col(ls), bgcolor = layBg, text_size = txtSize)
+        table.cell(dash, 3, rowN, showWeights and not na(ls) ? str.tostring(array.get(lW, l), "0") : "", text_color = color.new(color.white, 30), bgcolor = layBg, text_size = txtSize)
+        rowN := rowN + 1
 
-    table.cell(dash, 0, rowN, "Weighted score", text_color = color.new(color.gray, 0), text_size = txtSize, text_halign = text.align_left)
-    table.cell(dash, 1, rowN, biasScore > 0 ? "Long side" : biasScore < 0 ? "Short side" : "Balanced", text_color = biasCol, text_size = txtSize)
-    table.cell(dash, 2, rowN, str.tostring(biasScore, "0.0") + " / 100", text_color = biasCol, text_size = txtSize)
+        for i = 0 to array.size(cName) - 1
+            if array.get(cLayer, i) == l
+                float s = array.get(cScore, i)
+                bool on = array.get(cOn, i)
+                string tag = not on ? "off" : na(s) ? "no data" : f_txt(s)
+                color tc = not on or na(s) ? color.new(color.gray, 40) : f_col(s)
+                table.cell(dash, 0, rowN, "   " + array.get(cName, i), text_color = color.new(color.gray, 10), text_size = txtSize, text_halign = text.align_left)
+                table.cell(dash, 1, rowN, tag, text_color = tc, text_size = txtSize)
+                table.cell(dash, 2, rowN, on and not na(s) ? str.tostring(s * 100, "0") + "%" : "—", text_color = tc, text_size = txtSize)
+                table.cell(dash, 3, rowN, showWeights and array.get(cLive, i) > 0 ? str.tostring(array.get(cLive, i), "0") : "", text_color = color.new(color.gray, 40), text_size = txtSize)
+                rowN := rowN + 1
+
+    string dq = (deltaTrue ? "delta:true" : "delta:proxy") + (na(oiVal) ? "  oi:—" : "  oi:live") + (na(breadthNetRaw) and na(breadthPctRaw) ? "  breadth:—" : "  breadth:live")
+    table.cell(dash, 0, rowN, "Data feeds", text_color = color.new(color.gray, 10), bgcolor = layBg, text_size = txtSize, text_halign = text.align_left)
+    table.cell(dash, 1, rowN, dq, text_color = color.new(color.gray, 10), bgcolor = layBg, text_size = txtSize)
+    table.cell(dash, 2, rowN, useAdapt ? "adaptive" : "fixed", text_color = color.new(color.gray, 10), bgcolor = layBg, text_size = txtSize)
+    table.cell(dash, 3, rowN, "", bgcolor = layBg)
     rowN := rowN + 1
 
-    for r = rowN to 9
+    for r = rowN to 21
         table.cell(dash, 0, r, "")
         table.cell(dash, 1, r, "")
         table.cell(dash, 2, r, "")
+        table.cell(dash, 3, r, "")
 
 //──────────────────────────────────────────────────────────────────────
 // Alerts
