@@ -146,7 +146,9 @@ if array.size(hLevel) > 0
         swept = array.get(hSwept, i)
         origin = array.get(hOrigin, i)
         expired = (bar_index - origin) >= maxAgeBars
-        killed = close > H
+        // only a bullish candle may sweep a high; any other wick through kills it
+        invalidWick = not swept and high > H and not bull0
+        killed = close > H or invalidWick
         if killed or expired
             b = array.get(hBox, i)
             if not na(b)
@@ -199,7 +201,9 @@ if array.size(lLevel) > 0
         swept = array.get(lSwept, i)
         origin = array.get(lOrigin, i)
         expired = (bar_index - origin) >= maxAgeBars
-        killed = close < L
+        // only a bearish candle may sweep a low; any other wick through kills it
+        invalidWick = not swept and low < L and not bear0
+        killed = close < L or invalidWick
         if killed or expired
             b = array.get(lBox, i)
             if not na(b)
