@@ -111,19 +111,13 @@ string fontInput = input.string(
 
 // ── Resolved cosmetic constants ───────────────────────────────────────
 
-string borderStyle = borderStyleInput == "Dashed" ? line.style_dashed :
-                     borderStyleInput == "Dotted" ? line.style_dotted : line.style_solid
+string borderStyle = borderStyleInput == "Dashed" ? line.style_dashed : borderStyleInput == "Dotted" ? line.style_dotted : line.style_solid
 
-string textSize = textSizeInput == "Tiny"  ? size.tiny  :
-                  textSizeInput == "Small" ? size.small :
-                  textSizeInput == "Large" ? size.large :
-                  textSizeInput == "Huge"  ? size.huge  : size.normal
+string textSize = textSizeInput == "Tiny" ? size.tiny : textSizeInput == "Small" ? size.small : textSizeInput == "Large" ? size.large : textSizeInput == "Huge" ? size.huge : size.normal
 
-string hAlign = hAlignInput == "Left"  ? text.align_left  :
-                hAlignInput == "Right" ? text.align_right : text.align_center
+string hAlign = hAlignInput == "Left" ? text.align_left : hAlignInput == "Right" ? text.align_right : text.align_center
 
-string vAlign = vAlignInput == "Top"    ? text.align_top    :
-                vAlignInput == "Bottom" ? text.align_bottom : text.align_center
+string vAlign = vAlignInput == "Top" ? text.align_top : vAlignInput == "Bottom" ? text.align_bottom : text.align_center
 
 string fontFamily = fontInput == "Monospace" ? font.family_monospace : font.family_default
 
