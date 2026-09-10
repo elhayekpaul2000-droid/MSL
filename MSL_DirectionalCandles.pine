@@ -10,38 +10,122 @@ indicator(
 // Inputs
 //──────────────────────────────────────────────────────────────────────
 
-const string GROUP_LOGIC = "Directional Candles"
-const string GROUP_STYLE = "Zone Appearance"
+const string GROUP_LOGIC   = "Directional Candles"
+const string GROUP_ZONE    = "Zone Fill & Border"
+const string GROUP_TEXT    = "Zone Text"
 
 // Zones are scanned on every bar of history but are removed (object +
 // internal state) once they are older than this many bars.
 int lookbackBars = input.int(
      60,
      "Lookback / max zone age (bars)",
-     minval   = 2,
-     maxval   = 500,
-     tooltip  = "Zones older than this are deleted from the chart and from memory.",
-     group    = GROUP_LOGIC
+     minval  = 2,
+     maxval  = 500,
+     tooltip = "Zones older than this are deleted from the chart and from memory.",
+     group   = GROUP_LOGIC
 )
 
-color bullColor = input.color(color.teal, "Bullish zone", group = GROUP_STYLE)
-color bearColor = input.color(color.red,  "Bearish zone", group = GROUP_STYLE)
+int forwardBars = input.int(
+     20,
+     "Forward projection (bars)",
+     minval  = 0,
+     maxval  = 500,
+     tooltip = "How far past the current candle each zone is drawn.",
+     group   = GROUP_LOGIC
+)
+
+// ── Fill & border ─────────────────────────────────────────────────────
+
+color bullColor = input.color(color.teal, "Bullish zone color", group = GROUP_ZONE)
+color bearColor = input.color(color.red,  "Bearish zone color", group = GROUP_ZONE)
 
 int fillTransparency = input.int(
      85,
      "Fill transparency",
      minval = 0,
      maxval = 100,
-     group  = GROUP_STYLE
+     group  = GROUP_ZONE
+)
+
+bool showBorders = input.bool(true, "Show borders", group = GROUP_ZONE)
+
+int borderTransparency = input.int(
+     0,
+     "Border transparency",
+     minval = 0,
+     maxval = 100,
+     group  = GROUP_ZONE
 )
 
 int borderWidth = input.int(
      1,
      "Border width",
-     minval = 0,
+     minval = 1,
      maxval = 4,
-     group  = GROUP_STYLE
+     group  = GROUP_ZONE
 )
+
+string borderStyleInput = input.string(
+     "Solid",
+     "Border style",
+     options = ["Solid", "Dashed", "Dotted"],
+     group   = GROUP_ZONE
+)
+
+// ── Text ──────────────────────────────────────────────────────────────
+
+bool showZoneText = input.bool(true, "Show zone text", group = GROUP_TEXT)
+
+string bullText = input.string("Bullish", "Bullish label", group = GROUP_TEXT)
+string bearText = input.string("Bearish", "Bearish label", group = GROUP_TEXT)
+
+color textColor = input.color(color.white, "Text color", group = GROUP_TEXT)
+
+string textSizeInput = input.string(
+     "Normal",
+     "Text size",
+     options = ["Tiny", "Small", "Normal", "Large", "Huge"],
+     group   = GROUP_TEXT
+)
+
+string hAlignInput = input.string(
+     "Center",
+     "Text horizontal align",
+     options = ["Left", "Center", "Right"],
+     group   = GROUP_TEXT
+)
+
+string vAlignInput = input.string(
+     "Center",
+     "Text vertical align",
+     options = ["Top", "Center", "Bottom"],
+     group   = GROUP_TEXT
+)
+
+string fontInput = input.string(
+     "Default",
+     "Font",
+     options = ["Default", "Monospace"],
+     group   = GROUP_TEXT
+)
+
+// ── Resolved cosmetic constants ───────────────────────────────────────
+
+string borderStyle = borderStyleInput == "Dashed" ? line.style_dashed :
+                     borderStyleInput == "Dotted" ? line.style_dotted : line.style_solid
+
+string textSize = textSizeInput == "Tiny"  ? size.tiny  :
+                  textSizeInput == "Small" ? size.small :
+                  textSizeInput == "Large" ? size.large :
+                  textSizeInput == "Huge"  ? size.huge  : size.normal
+
+string hAlign = hAlignInput == "Left"  ? text.align_left  :
+                hAlignInput == "Right" ? text.align_right : text.align_center
+
+string vAlign = vAlignInput == "Top"    ? text.align_top    :
+                vAlignInput == "Bottom" ? text.align_bottom : text.align_center
+
+string fontFamily = fontInput == "Monospace" ? font.family_monospace : font.family_default
 
 //──────────────────────────────────────────────────────────────────────
 // State
@@ -50,23 +134,30 @@ int borderWidth = input.int(
 // dropped from memory at the same moment its box is deleted.
 //──────────────────────────────────────────────────────────────────────
 
-var array<box>   zoneBox   = array.new<box>()
-var array<float> zoneTop   = array.new<float>()
-var array<float> zoneBot   = array.new<float>()
-var array<int>   zoneStart = array.new<int>()
+var array<box>   zoneBox    = array.new<box>()
+var array<float> zoneTop    = array.new<float>()
+var array<float> zoneBot    = array.new<float>()
+var array<int>   zoneStart  = array.new<int>()
 var array<bool>  zoneIsBull = array.new<bool>()
 
 createZone(bool isBull, float top, float bot, int startBar) =>
     color baseColor = isBull ? bullColor : bearColor
     box b = box.new(
-         left         = startBar,
-         top          = top,
-         right        = bar_index,
-         bottom       = bot,
-         border_color = borderWidth > 0 ? baseColor : color.new(baseColor, 100),
-         border_width = borderWidth,
-         bgcolor      = color.new(baseColor, fillTransparency),
-         xloc         = xloc.bar_index
+         left             = startBar,
+         top              = top,
+         right            = bar_index + forwardBars,
+         bottom           = bot,
+         border_color     = showBorders ? color.new(baseColor, borderTransparency) : color.new(baseColor, 100),
+         border_width     = showBorders ? borderWidth : 0,
+         border_style     = borderStyle,
+         bgcolor          = color.new(baseColor, fillTransparency),
+         text             = showZoneText ? (isBull ? bullText : bearText) : "",
+         text_color       = textColor,
+         text_size        = textSize,
+         text_halign      = hAlign,
+         text_valign      = vAlign,
+         text_font_family = fontFamily,
+         xloc             = xloc.bar_index
      )
     array.push(zoneBox,    b)
     array.push(zoneTop,    top)
@@ -101,7 +192,7 @@ if array.size(zoneBox) > 0
         if invalidated or expired
             deleteZone(i)
         else
-            box.set_right(array.get(zoneBox, i), bar_index)
+            box.set_right(array.get(zoneBox, i), bar_index + forwardBars)
 
 //──────────────────────────────────────────────────────────────────────
 // Detection
@@ -113,7 +204,8 @@ if array.size(zoneBox) > 0
 //      then a bear candle that closes below bull1's wick low.
 // Bullish is the exact mirror.
 //
-// Zone = wick to wick of the candles that form the pattern.
+// Zone = wick to wick of the REFERENCE candles only. The trigger candle
+// (the one that sweeps / closes through) is never part of the zone.
 //──────────────────────────────────────────────────────────────────────
 
 bool bullBar = close > open
@@ -127,10 +219,12 @@ bool bullPush = bearBar[2] and bearBar[1] and close[1] >= low[2]  and bullBar an
 
 if barstate.isconfirmed and bar_index > 2
     if bearSweep
-        createZone(false, math.max(high, high[1]), math.min(low, low[1]), bar_index - 1)
+        // reference: the swept candle
+        createZone(false, high[1], low[1], bar_index - 1)
     else if bearPush
-        createZone(false, math.max(high[2], math.max(high[1], high)), math.min(low[2], math.min(low[1], low)), bar_index - 2)
+        // reference: bull0 + bull1
+        createZone(false, math.max(high[2], high[1]), math.min(low[2], low[1]), bar_index - 2)
     else if bullSweep
-        createZone(true, math.max(high, high[1]), math.min(low, low[1]), bar_index - 1)
+        createZone(true, high[1], low[1], bar_index - 1)
     else if bullPush
-        createZone(true, math.max(high[2], math.max(high[1], high)), math.min(low[2], math.min(low[1], low)), bar_index - 2)
+        createZone(true, math.max(high[2], high[1]), math.min(low[2], low[1]), bar_index - 2)
