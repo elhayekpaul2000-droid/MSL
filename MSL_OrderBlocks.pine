@@ -1,6 +1,7 @@
 //@version=6
 indicator(
-    "MSL- Continuation/Reversal OrderBlocks",
+    "MSL — Order Blocks (Continuation / Reversal)",
+    shorttitle = "MSL OB",
     overlay = true,
     max_boxes_count = 500,
     max_labels_count = 500
@@ -13,40 +14,38 @@ indicator(
 const int MAX_ZONES_PER_SIDE         = 250
 const int MAX_PENDING_ZONES_PER_SIDE = 1000
 
-const string GROUP_TYPES    = "Order block types"
-const string GROUP_DURATION = "Zone duration"
-const string GROUP_FILL     = "Zone fill"
-const string GROUP_BORDER   = "Zone borders"
-const string GROUP_TEXT     = "Zone text"
-const string GROUP_MARKERS   = "Zone exit markers"
-const string GROUP_ALERTS    = "Universal alerts"
-const string GROUP_WATERMARK = "Watermark"
+const string GROUP_LOGIC      = "Order Block Logic"
+const string GROUP_LIFECYCLE  = "Zone Lifecycle"
+const string GROUP_APPEARANCE = "Zone Appearance"
+const string GROUP_MARKERS    = "Exit Markers"
+const string GROUP_ALERTS     = "Alerts"
+const string GROUP_WATERMARK  = "Watermark"
 
 //──────────────────────────────────────────────────────────────────────
-// Order-block types
+// Order Block Logic
 //──────────────────────────────────────────────────────────────────────
 
 bool showReversalZones = input.bool(
      true,
-     "Enable reversal order blocks",
-     group = GROUP_TYPES
-)
-
-bool enableRelaxedReversalMode = input.bool(
-     true,
-     "Enable relaxed reversal mode",
-     tooltip = "ON: reversal c1 may qualify by closing beyond c0's body open. OFF: reversal c1 must close beyond c0's wick. Continuation order blocks always remain strict.",
-     group = GROUP_TYPES
+     "Reversal order blocks",
+     group = GROUP_LOGIC
 )
 
 bool showContinuationZones = input.bool(
      true,
-     "Enable continuation order blocks",
-     group = GROUP_TYPES
+     "Continuation order blocks",
+     group = GROUP_LOGIC
+)
+
+bool enableRelaxedReversalMode = input.bool(
+     true,
+     "Relaxed reversal mode",
+     tooltip = "ON: reversal c1 may qualify by closing beyond c0's body open. OFF: reversal c1 must close beyond c0's wick. Continuation order blocks always remain strict.",
+     group = GROUP_LOGIC
 )
 
 //──────────────────────────────────────────────────────────────────────
-// Zone duration
+// Zone Lifecycle
 //──────────────────────────────────────────────────────────────────────
 
 // Number of nominal chart-timeframe intervals used for visual projection.
@@ -54,10 +53,10 @@ bool showContinuationZones = input.bool(
 // not a lookup of actual future tradable bars.
 int visualExtensionBars = input.int(
      21,
-     "Future visual extension",
+     "Forward projection (bars)",
      minval = 1,
      maxval = 500,
-     group = GROUP_DURATION
+     group = GROUP_LIFECYCLE
 )
 
 // One lifetime setting applies equally on every chart timeframe.
@@ -67,53 +66,40 @@ int zoneLifeBars = input.int(
      minval = 1,
      maxval = 5000,
      tooltip = "Number of bars an active zone remains valid after confirmation, unless invalidated earlier.",
-     group = GROUP_DURATION
+     group = GROUP_LIFECYCLE
 )
 
 //──────────────────────────────────────────────────────────────────────
-// Zone fill
+// Zone Appearance
 //──────────────────────────────────────────────────────────────────────
 
-color bullFillColor = input.color(
+// Universal colors: one color per direction, reused for fill, border,
+// text, and exit markers. Keeps the whole indicator visually consistent
+// with a single pair of controls instead of a color picker per element.
+color bullColor = input.color(
      color.lime,
-     "Bullish fill",
-     group = GROUP_FILL
+     "Bullish color",
+     group = GROUP_APPEARANCE
 )
 
-color bearFillColor = input.color(
+color bearColor = input.color(
      color.red,
-     "Bearish fill",
-     group = GROUP_FILL
+     "Bearish color",
+     group = GROUP_APPEARANCE
 )
 
 int fillTransparency = input.int(
      85,
-     "Fill transparency",
+     "Zone opacity",
      minval = 0,
      maxval = 100,
-     group = GROUP_FILL
+     group = GROUP_APPEARANCE
 )
-
-//──────────────────────────────────────────────────────────────────────
-// Zone borders
-//──────────────────────────────────────────────────────────────────────
 
 bool showBorders = input.bool(
      true,
-     "Show borders",
-     group = GROUP_BORDER
-)
-
-color bullBorderColor = input.color(
-     color.lime,
-     "Bullish border",
-     group = GROUP_BORDER
-)
-
-color bearBorderColor = input.color(
-     color.red,
-     "Bearish border",
-     group = GROUP_BORDER
+     "Zone borders",
+     group = GROUP_APPEARANCE
 )
 
 int borderWidth = input.int(
@@ -121,7 +107,7 @@ int borderWidth = input.int(
      "Border width",
      minval = 1,
      maxval = 5,
-     group = GROUP_BORDER
+     group = GROUP_APPEARANCE
 )
 
 string borderStyleInput = input.string(
@@ -132,7 +118,7 @@ string borderStyleInput = input.string(
          "Dashed",
          "Dotted"
      ],
-     group = GROUP_BORDER
+     group = GROUP_APPEARANCE
 )
 
 zoneBorderStyle = switch borderStyleInput
@@ -140,31 +126,15 @@ zoneBorderStyle = switch borderStyleInput
     "Dotted" => line.style_dotted
     => line.style_solid
 
-//──────────────────────────────────────────────────────────────────────
-// Zone text
-//──────────────────────────────────────────────────────────────────────
-
 bool showZoneText = input.bool(
      true,
-     "Show zone text",
-     group = GROUP_TEXT
-)
-
-color bullTextColor = input.color(
-     color.lime,
-     "Bullish text",
-     group = GROUP_TEXT
-)
-
-color bearTextColor = input.color(
-     color.red,
-     "Bearish text",
-     group = GROUP_TEXT
+     "Zone labels",
+     group = GROUP_APPEARANCE
 )
 
 string zoneTextSizeInput = input.string(
      "Small",
-     "Text size",
+     "Label size",
      options = [
          "Tiny",
          "Small",
@@ -172,7 +142,7 @@ string zoneTextSizeInput = input.string(
          "Large",
          "Huge"
      ],
-     group = GROUP_TEXT
+     group = GROUP_APPEARANCE
 )
 
 zoneTextSize = switch zoneTextSizeInput
@@ -184,12 +154,12 @@ zoneTextSize = switch zoneTextSizeInput
 
 string fontInput = input.string(
      "Default",
-     "Font",
+     "Label font",
      options = [
          "Default",
          "Monospace"
      ],
-     group = GROUP_TEXT
+     group = GROUP_APPEARANCE
 )
 
 zoneFont = switch fontInput
@@ -197,241 +167,84 @@ zoneFont = switch fontInput
     => font.family_default
 
 //──────────────────────────────────────────────────────────────────────
-// Zone exit markers
+// Exit Markers
 //──────────────────────────────────────────────────────────────────────
 
 // Markers use label objects rather than plotshape(). This is intentional:
 // plotshape() requires const values for its style and size parameters, so
 // TradingView does not allow input-driven shape/size selection there.
 // label.new() accepts dynamic style, size, color, text and positioning.
+// Marker color reuses the universal bull/bear colors above.
 
 bool showBullExitMarkers = input.bool(
      true,
-     "Show bullish exit markers",
+     "Bullish exit markers",
      group = GROUP_MARKERS
 )
 
 bool showBearExitMarkers = input.bool(
      true,
-     "Show bearish exit markers",
+     "Bearish exit markers",
      group = GROUP_MARKERS
 )
 
-color bullExitMarkerColor = input.color(
-     color.lime,
-     "Bullish marker color",
-     group = GROUP_MARKERS
-)
-
-color bearExitMarkerColor = input.color(
-     color.red,
-     "Bearish marker color",
-     group = GROUP_MARKERS
-)
-
-int bullExitMarkerTransparency = input.int(
-     0,
-     "Bullish marker transparency",
-     minval = 0,
-     maxval = 100,
-     group = GROUP_MARKERS
-)
-
-int bearExitMarkerTransparency = input.int(
-     0,
-     "Bearish marker transparency",
-     minval = 0,
-     maxval = 100,
-     group = GROUP_MARKERS
-)
-
-string bullExitMarkerShapeInput = input.string(
-     "Triangle Up",
-     "Bullish marker shape",
+string markerShapeInput = input.string(
+     "Triangle",
+     "Marker shape",
      options = [
-         "Triangle Up",
-         "Triangle Down",
-         "Arrow Up",
-         "Arrow Down",
+         "Triangle",
+         "Arrow",
+         "Label",
          "Circle",
          "Diamond",
          "Square",
          "Cross",
          "X Cross",
-         "Flag",
-         "Label Up",
-         "Label Down"
+         "Flag"
      ],
+     tooltip = "Directional shapes (Triangle/Arrow/Label) automatically point up for bullish exits and down for bearish exits.",
      group = GROUP_MARKERS
 )
 
-string bearExitMarkerShapeInput = input.string(
-     "Triangle Down",
-     "Bearish marker shape",
-     options = [
-         "Triangle Up",
-         "Triangle Down",
-         "Arrow Up",
-         "Arrow Down",
-         "Circle",
-         "Diamond",
-         "Square",
-         "Cross",
-         "X Cross",
-         "Flag",
-         "Label Up",
-         "Label Down"
-     ],
-     group = GROUP_MARKERS
-)
-
-string bullExitMarkerStyle = switch bullExitMarkerShapeInput
-    "Triangle Down" => label.style_triangledown
-    "Arrow Up"      => label.style_arrowup
-    "Arrow Down"    => label.style_arrowdown
-    "Circle"        => label.style_circle
-    "Diamond"       => label.style_diamond
-    "Square"        => label.style_square
-    "Cross"         => label.style_cross
-    "X Cross"       => label.style_xcross
-    "Flag"          => label.style_flag
-    "Label Up"      => label.style_label_up
-    "Label Down"    => label.style_label_down
-    => label.style_triangleup
-
-string bearExitMarkerStyle = switch bearExitMarkerShapeInput
-    "Triangle Up" => label.style_triangleup
-    "Arrow Up"    => label.style_arrowup
-    "Arrow Down"  => label.style_arrowdown
-    "Circle"      => label.style_circle
-    "Diamond"     => label.style_diamond
-    "Square"      => label.style_square
-    "Cross"       => label.style_cross
-    "X Cross"     => label.style_xcross
-    "Flag"        => label.style_flag
-    "Label Up"    => label.style_label_up
-    "Label Down"  => label.style_label_down
-    => label.style_triangledown
-
-// Labels accept an integer size, allowing finer control than the fixed
-// plotshape size constants. Around 7/10/12/18/24 approximates
-// Tiny/Small/Normal/Large/Huge.
-int bullExitMarkerSize = input.int(
+int markerSize = input.int(
      10,
-     "Bullish marker size",
+     "Marker size",
      minval = 1,
      maxval = 50,
      group = GROUP_MARKERS
 )
 
-int bearExitMarkerSize = input.int(
-     10,
-     "Bearish marker size",
-     minval = 1,
-     maxval = 50,
+int markerTransparency = input.int(
+     0,
+     "Marker opacity",
+     minval = 0,
+     maxval = 100,
      group = GROUP_MARKERS
 )
 
-string bullExitMarkerLocationInput = input.string(
-     "Below bar",
-     "Bullish marker location",
+string markerPlacementInput = input.string(
+     "Auto",
+     "Marker placement",
      options = [
+         "Auto",
          "Above bar",
          "Below bar",
          "At candle high",
          "At candle low",
          "At candle close"
      ],
+     tooltip = "Auto places bullish markers below the bar and bearish markers above it.",
      group = GROUP_MARKERS
 )
 
-string bearExitMarkerLocationInput = input.string(
-     "Above bar",
-     "Bearish marker location",
-     options = [
-         "Above bar",
-         "Below bar",
-         "At candle high",
-         "At candle low",
-         "At candle close"
-     ],
-     group = GROUP_MARKERS
-)
-
-int bullExitMarkerOffset = input.int(
-     0,
-     "Bullish marker horizontal offset",
-     minval = -50,
-     maxval = 50,
-     tooltip = "Moves the marker left or right by this many chart bars. Zero keeps it on the qualifying candle.",
-     group = GROUP_MARKERS
-)
-
-int bearExitMarkerOffset = input.int(
-     0,
-     "Bearish marker horizontal offset",
-     minval = -50,
-     maxval = 50,
-     tooltip = "Moves the marker left or right by this many chart bars. Zero keeps it on the qualifying candle.",
-     group = GROUP_MARKERS
-)
-
-int bullExitMarkerVerticalTicks = input.int(
-     0,
-     "Bullish marker vertical offset (ticks)",
-     minval = -1000,
-     maxval = 1000,
-     tooltip = "Applied when location is At candle high, At candle low, or At candle close.",
-     group = GROUP_MARKERS
-)
-
-int bearExitMarkerVerticalTicks = input.int(
-     0,
-     "Bearish marker vertical offset (ticks)",
-     minval = -1000,
-     maxval = 1000,
-     tooltip = "Applied when location is At candle high, At candle low, or At candle close.",
-     group = GROUP_MARKERS
-)
-
-bool showBullExitMarkerText = input.bool(
+bool showMarkerLabels = input.bool(
      false,
-     "Show bullish marker text",
-     group = GROUP_MARKERS
-)
-
-bool showBearExitMarkerText = input.bool(
-     false,
-     "Show bearish marker text",
-     group = GROUP_MARKERS
-)
-
-string bullExitMarkerText = input.string(
-     "B",
-     "Bullish marker text",
-     group = GROUP_MARKERS
-)
-
-string bearExitMarkerText = input.string(
-     "S",
-     "Bearish marker text",
-     group = GROUP_MARKERS
-)
-
-color bullExitMarkerTextColor = input.color(
-     color.white,
-     "Bullish marker text color",
-     group = GROUP_MARKERS
-)
-
-color bearExitMarkerTextColor = input.color(
-     color.white,
-     "Bearish marker text color",
+     "Marker text (B/S)",
      group = GROUP_MARKERS
 )
 
 //──────────────────────────────────────────────────────────────────────
-// Universal alerts
+// Alerts
 //──────────────────────────────────────────────────────────────────────
 
 // One TradingView alert instance can cover every confirmed bullish and
@@ -439,13 +252,13 @@ color bearExitMarkerTextColor = input.color(
 // of marker visibility/cosmetics: hiding a marker does not disable alerts.
 bool enableUniversalExitAlerts = input.bool(
      true,
-     "Enable universal exit alerts",
+     "Exit alerts",
      tooltip = "Fires once at bar close whenever an active zone produces the same valid-side exit event used for the marker. Bullish and bearish exits on the same candle are combined into one notification.",
      group = GROUP_ALERTS
 )
 
 //──────────────────────────────────────────────────────────────────────
-// Fixed watermark
+// Watermark
 //──────────────────────────────────────────────────────────────────────
 
 // The watermark is always visible. There is deliberately no enable/disable input.
@@ -606,20 +419,10 @@ createZoneBox(
      float bottomPrice,
      string zoneText
  ) =>
-    color fillColor =
+    color directionalColor =
          bullish
-         ? bullFillColor
-         : bearFillColor
-
-    color borderColor =
-         bullish
-         ? bullBorderColor
-         : bearBorderColor
-
-    color textColor =
-         bullish
-         ? bullTextColor
-         : bearTextColor
+         ? bullColor
+         : bearColor
 
     box.new(
          left = leftTime,
@@ -627,15 +430,15 @@ createZoneBox(
          right = rightTime,
          bottom = bottomPrice,
          xloc = xloc.bar_time,
-         border_color = showBorders ? borderColor : na,
+         border_color = showBorders ? directionalColor : na,
          border_width = borderWidth,
          border_style = zoneBorderStyle,
          bgcolor = color.new(
-             fillColor,
+             directionalColor,
              fillTransparency
          ),
          text = zoneText,
-         text_color = textColor,
+         text_color = directionalColor,
          text_size = zoneTextSize,
          text_halign = text.align_center,
          text_valign = text.align_center,
@@ -648,9 +451,8 @@ createZoneBox(
 // Mark an active zone after price closes beyond its 51% level
 //──────────────────────────────────────────────────────────────────────
 
-// FIX #1: honor the "Show zone text" toggle. Previously this always wrote
-// "Lost 51% LQ" onto the box even when showZoneText was disabled, ignoring
-// the user's choice to hide zone text.
+// Honors the "Zone labels" toggle: stays silent instead of always writing
+// "Lost 51% LQ" onto the box when zone text has been turned off.
 markZoneLost51(
      box drawing,
      string baseText
@@ -728,8 +530,8 @@ releaseZoneMarkers(
 
         if ownedMarker.parentCount <= 0
             label.delete(ownedMarker.drawing)
-            // FIX #3: keep our own live-label count in sync so it never
-            // silently drifts past max_labels_count (see createExitMarker).
+            // Keep our own live-label count in sync so it never silently
+            // drifts past max_labels_count (see createExitMarker).
             array.set(
                  trackedExitMarkerCountBox,
                  0,
@@ -761,12 +563,12 @@ makeRoomForActiveZone(
 // Exit-marker creation
 //──────────────────────────────────────────────────────────────────────
 
-// FIX #3: previously nothing tracked how many exit-marker labels were alive
-// at once. With very long zone lifetimes and an active symbol, live markers
-// could exceed max_labels_count=500 and TradingView would silently delete
-// the oldest ones out from under still-active zones, leaving their
-// parentCount bookkeeping stale. We now cap creation so our own tracked
-// label count never exceeds the indicator's label budget.
+// Tracks how many exit-marker labels are alive at once. With very long zone
+// lifetimes and an active symbol, live markers could otherwise exceed
+// max_labels_count=500 and TradingView would silently delete the oldest
+// ones out from under still-active zones, leaving their parentCount
+// bookkeeping stale. We cap creation so our own tracked label count never
+// exceeds the indicator's label budget.
 const int MAX_TRACKED_EXIT_MARKERS = 500
 
 createExitMarker(
@@ -775,88 +577,55 @@ createExitMarker(
     label newMarkerLabel = na
 
     if array.get(trackedExitMarkerCountBox, 0) < MAX_TRACKED_EXIT_MARKERS
-        string locationInput =
-             bullish
-             ? bullExitMarkerLocationInput
-             : bearExitMarkerLocationInput
+        string effectivePlacement =
+             markerPlacementInput == "Auto"
+             ? (bullish ? "Below bar" : "Above bar")
+             : markerPlacementInput
 
-        string markerYLoc = switch locationInput
+        string markerYLoc = switch effectivePlacement
             "Above bar" => yloc.abovebar
             "Below bar" => yloc.belowbar
             => yloc.price
 
-        float basePrice = switch locationInput
+        float markerPrice = switch effectivePlacement
             "At candle high"  => high
             "At candle low"   => low
             "At candle close" => close
             => na
 
-        int verticalTicks =
-             bullish
-             ? bullExitMarkerVerticalTicks
-             : bearExitMarkerVerticalTicks
-
-        float markerPrice =
-             na(basePrice)
-             ? na
-             : basePrice + syminfo.mintick * verticalTicks
-
-        int horizontalOffset =
-             bullish
-             ? bullExitMarkerOffset
-             : bearExitMarkerOffset
-
-        // Avoid a negative bar-index coordinate near the beginning of a dataset.
-        int markerBarIndex = math.max(
-             bar_index + horizontalOffset,
-             0
+        color markerColor = color.new(
+             bullish ? bullColor : bearColor,
+             markerTransparency
          )
 
-        color markerColor =
-             bullish
-             ? color.new(
-                   bullExitMarkerColor,
-                   bullExitMarkerTransparency
-               )
-             : color.new(
-                   bearExitMarkerColor,
-                   bearExitMarkerTransparency
-               )
-
-        string markerStyle =
-             bullish
-             ? bullExitMarkerStyle
-             : bearExitMarkerStyle
-
-        int markerSize =
-             bullish
-             ? bullExitMarkerSize
-             : bearExitMarkerSize
-
-        bool showMarkerText =
-             bullish
-             ? showBullExitMarkerText
-             : showBearExitMarkerText
+        // Directional shapes point up for bullish exits, down for bearish
+        // exits; non-directional shapes are used as-is on both sides.
+        string markerStyle = switch markerShapeInput
+            "Triangle" => bullish ? label.style_triangleup : label.style_triangledown
+            "Arrow"    => bullish ? label.style_arrowup    : label.style_arrowdown
+            "Label"    => bullish ? label.style_label_up   : label.style_label_down
+            "Circle"   => label.style_circle
+            "Diamond"  => label.style_diamond
+            "Square"   => label.style_square
+            "Cross"    => label.style_cross
+            "X Cross"  => label.style_xcross
+            "Flag"     => label.style_flag
+            => label.style_triangleup
 
         string markerText =
-             showMarkerText
-             ? (bullish ? bullExitMarkerText : bearExitMarkerText)
+             showMarkerLabels
+             ? (bullish ? "B" : "S")
              : ""
 
-        color markerTextColor =
-             bullish
-             ? bullExitMarkerTextColor
-             : bearExitMarkerTextColor
-
         newMarkerLabel := label.new(
-             x = markerBarIndex,
+             x = bar_index,
              y = markerPrice,
              text = markerText,
              xloc = xloc.bar_index,
              yloc = markerYLoc,
              color = markerColor,
              style = markerStyle,
-             textcolor = markerTextColor,
+             textcolor = color.white,
              size = markerSize
          )
 
@@ -982,9 +751,9 @@ processActiveZones(
         // its reference across every zone that produced the signal.
         label newMarkerDrawing = createExitMarker(bullish)
 
-        // FIX #3: createExitMarker() can now return na once the tracked-label
-        // budget is exhausted. Only register the marker with its parent zones
-        // when a label was actually created.
+        // createExitMarker() can return na once the tracked-label budget is
+        // exhausted. Only register the marker with its parent zones when a
+        // label was actually created.
         if not na(newMarkerDrawing)
             ExitMarker sharedMarker = ExitMarker.new(
                  newMarkerDrawing,
@@ -1056,8 +825,8 @@ processPendingZones(
                  )
 
             if confirmed
-                // FIX #2: guard against a degenerate zero-height box. This
-                // can happen on the refined-bearish-reversal path when c0 has
+                // Guard against a degenerate zero-height box. This can
+                // happen on the refined-bearish-reversal path when c0 has
                 // no upper wick (close[1] == high[1]) and c1's high does not
                 // exceed c0's close, making top == bottom. Skip confirming
                 // (and drop the malformed pending zone) rather than drawing
@@ -1474,10 +1243,10 @@ if barstate.isconfirmed
             bool isContinuation =
                  bearishContinuationSetup
 
-            // FIX #2: compute the refined lower boundary (c0 body close) and
-            // the upper boundary (highest c0/c1 wick) up front so a
-            // degenerate (zero-height) refined zone can be detected and
-            // skipped before ever being queued as pending.
+            // Compute the refined lower boundary (c0 body close) and the
+            // upper boundary (highest c0/c1 wick) up front so a degenerate
+            // (zero-height) refined zone can be detected and skipped before
+            // ever being queued as pending.
             float bearishTop =
                  math.max(
                      high[1],
