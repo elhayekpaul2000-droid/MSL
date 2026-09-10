@@ -129,6 +129,9 @@ if lowFormed
     array.push(lLbl, newLbl)
     array.push(lOrigin, wickBar)
 
+bool highZoneAlert = false
+bool lowZoneAlert  = false
+
 // ─── Process high levels: sweep, kill, or expire ───
 if array.size(hLevel) > 0
     for i = array.size(hLevel) - 1 to 0
@@ -164,6 +167,7 @@ if array.size(hLevel) > 0
                     newBox := box.new(left = bar_index, top = high, right = bar_index + zoneProjBars, bottom = close, border_color = highZoneBorder, border_width = highZoneBorderWidth, border_style = f_style(highZoneBorderStyleInput), bgcolor = highZoneColor)
                 array.set(hBox, i, newBox)
                 array.set(hSwept, i, true)
+                highZoneAlert := true
             else if swept
                 bx = array.get(hBox, i)
                 if not na(bx)
@@ -204,7 +208,16 @@ if array.size(lLevel) > 0
                     newBox := box.new(left = bar_index, top = close, right = bar_index + zoneProjBars, bottom = low, border_color = lowZoneBorder, border_width = lowZoneBorderWidth, border_style = f_style(lowZoneBorderStyleInput), bgcolor = lowZoneColor)
                 array.set(lBox, i, newBox)
                 array.set(lSwept, i, true)
+                lowZoneAlert := true
             else if swept
                 bx = array.get(lBox, i)
                 if not na(bx)
                     box.set_right(bx, bar_index + zoneProjBars)
+
+// ─── Alerts: one confirmed notification per bar close, covering both sides ───
+string alertSide = highZoneAlert and lowZoneAlert ? "High + Low sweep zone" : highZoneAlert ? "High sweep zone" : lowZoneAlert ? "Low sweep zone" : ""
+if alertSide != ""
+    alert("MSL - SRE: " + alertSide + " | " + syminfo.ticker + " " + timeframe.period + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+alertcondition(highZoneAlert, "MSL - SRE: High sweep zone", "MSL - SRE: High sweep zone confirmed")
+alertcondition(lowZoneAlert, "MSL - SRE: Low sweep zone", "MSL - SRE: Low sweep zone confirmed")
