@@ -9,30 +9,37 @@ GROUP_LOW       = "Low Levels & Zones"
 GROUP_LABELS    = "Labels"
 
 // ─── Lifecycle ───
-maxAgeBars    = input.int(120, "Max Level Age (Bars)", minval = 1, maxval = 5000, group = GROUP_LIFECYCLE, tooltip = "A registered high/low (line, zone, label) is fully deleted once it is older than this many bars.")
-zoneProjBars  = input.int(20, "Zone Forward Projection (Bars)", minval = 1, maxval = 500, group = GROUP_LIFECYCLE, tooltip = "A sweep zone always ends this many bars ahead of the current candle.")
+maxAgeBars   = input.int(120, "Max Level Age (Bars)", minval = 1, maxval = 5000, group = GROUP_LIFECYCLE, tooltip = "A registered high/low (line, zone, label) is fully deleted once it is older than this many bars.")
+zoneProjBars = input.int(20, "Zone Forward Projection (Bars)", minval = 1, maxval = 500, group = GROUP_LIFECYCLE, tooltip = "A sweep zone always ends this many bars ahead of the current candle.")
 
 // ─── Display toggles ───
-showLevelLines = input.bool(true, "Show Registered Level Lines", group = GROUP_DISPLAY)
-showZones      = input.bool(true, "Show Sweep Zones", group = GROUP_DISPLAY)
-showLabels     = input.bool(true, "Show H/L Pattern Labels", group = GROUP_DISPLAY)
+showPendingLevels = input.bool(true, "Show Pending (Unswept) Levels", group = GROUP_DISPLAY, tooltip = "The line that tracks a registered wick while it waits to be swept.")
+showConnectors    = input.bool(true, "Show Sweep Connector Rays", group = GROUP_DISPLAY, tooltip = "The ray from the swept wick to the sweeping candle. Independent of the pending level line.")
+showZones         = input.bool(true, "Show Sweep Zones", group = GROUP_DISPLAY)
+showLabels        = input.bool(true, "Show H/L Pattern Labels", group = GROUP_DISPLAY)
 
 // ─── High styling ───
-highLineColor           = input.color(color.new(color.red, 40), "Level Line Color", group = GROUP_HIGH)
-highLineWidth           = input.int(1, "Level Line Width", minval = 1, maxval = 5, group = GROUP_HIGH)
-highLineStyleInput      = input.string("Dotted", "Level Line Style", options = ["Solid", "Dashed", "Dotted"], group = GROUP_HIGH)
-highZoneColor           = input.color(color.new(color.red, 80), "Zone Background", group = GROUP_HIGH)
-highZoneBorder          = input.color(color.red, "Zone Border Color", group = GROUP_HIGH)
-highZoneBorderWidth     = input.int(1, "Zone Border Width", minval = 1, maxval = 5, group = GROUP_HIGH)
+highLineColor            = input.color(color.new(color.red, 40), "Pending Level Color", group = GROUP_HIGH)
+highLineWidth            = input.int(1, "Pending Level Width", minval = 1, maxval = 5, group = GROUP_HIGH)
+highLineStyleInput       = input.string("Dotted", "Pending Level Style", options = ["Solid", "Dashed", "Dotted"], group = GROUP_HIGH)
+highConnColor            = input.color(color.red, "Connector Ray Color", group = GROUP_HIGH)
+highConnWidth            = input.int(1, "Connector Ray Width", minval = 1, maxval = 5, group = GROUP_HIGH)
+highConnStyleInput       = input.string("Solid", "Connector Ray Style", options = ["Solid", "Dashed", "Dotted"], group = GROUP_HIGH)
+highZoneColor            = input.color(color.new(color.red, 80), "Zone Background", group = GROUP_HIGH)
+highZoneBorder           = input.color(color.red, "Zone Border Color", group = GROUP_HIGH)
+highZoneBorderWidth      = input.int(1, "Zone Border Width", minval = 1, maxval = 5, group = GROUP_HIGH)
 highZoneBorderStyleInput = input.string("Solid", "Zone Border Style", options = ["Solid", "Dashed", "Dotted"], group = GROUP_HIGH)
 
 // ─── Low styling ───
-lowLineColor           = input.color(color.new(color.green, 40), "Level Line Color", group = GROUP_LOW)
-lowLineWidth           = input.int(1, "Level Line Width", minval = 1, maxval = 5, group = GROUP_LOW)
-lowLineStyleInput      = input.string("Dotted", "Level Line Style", options = ["Solid", "Dashed", "Dotted"], group = GROUP_LOW)
-lowZoneColor           = input.color(color.new(color.green, 80), "Zone Background", group = GROUP_LOW)
-lowZoneBorder          = input.color(color.green, "Zone Border Color", group = GROUP_LOW)
-lowZoneBorderWidth     = input.int(1, "Zone Border Width", minval = 1, maxval = 5, group = GROUP_LOW)
+lowLineColor            = input.color(color.new(color.green, 40), "Pending Level Color", group = GROUP_LOW)
+lowLineWidth            = input.int(1, "Pending Level Width", minval = 1, maxval = 5, group = GROUP_LOW)
+lowLineStyleInput       = input.string("Dotted", "Pending Level Style", options = ["Solid", "Dashed", "Dotted"], group = GROUP_LOW)
+lowConnColor            = input.color(color.green, "Connector Ray Color", group = GROUP_LOW)
+lowConnWidth            = input.int(1, "Connector Ray Width", minval = 1, maxval = 5, group = GROUP_LOW)
+lowConnStyleInput       = input.string("Solid", "Connector Ray Style", options = ["Solid", "Dashed", "Dotted"], group = GROUP_LOW)
+lowZoneColor            = input.color(color.new(color.green, 80), "Zone Background", group = GROUP_LOW)
+lowZoneBorder           = input.color(color.green, "Zone Border Color", group = GROUP_LOW)
+lowZoneBorderWidth      = input.int(1, "Zone Border Width", minval = 1, maxval = 5, group = GROUP_LOW)
 lowZoneBorderStyleInput = input.string("Solid", "Zone Border Style", options = ["Solid", "Dashed", "Dotted"], group = GROUP_LOW)
 
 // ─── Label styling ───
@@ -94,7 +101,7 @@ if highFormed
     wickBar = bar_index - offset
 
     line newLine = na
-    if showLevelLines
+    if showPendingLevels
         newLine := line.new(wickBar, wickVal, bar_index, wickVal, color = highLineColor, width = highLineWidth, style = f_style(highLineStyleInput))
 
     label newLbl = na
@@ -115,7 +122,7 @@ if lowFormed
     wickBar = bar_index - offset
 
     line newLine = na
-    if showLevelLines
+    if showPendingLevels
         newLine := line.new(wickBar, wickVal, bar_index, wickVal, color = lowLineColor, width = lowLineWidth, style = f_style(lowLineStyleInput))
 
     label newLbl = na
@@ -156,22 +163,34 @@ if array.size(hLevel) > 0
             array.remove(hLine, i)
             array.remove(hLbl, i)
             array.remove(hOrigin, i)
-        else
-            ln2 = array.get(hLine, i)
-            if not na(ln2) and not swept
-                // level line freezes at the candle that closes the sweep
-                line.set_x2(ln2, bar_index)
-            if not swept and bull0 and high > H and close < H
+        else if not swept
+            ln = array.get(hLine, i)
+            if not na(ln)
+                line.set_x2(ln, bar_index)
+            if bull0 and high > H and close < H
+                // sweep confirmed: pending line becomes the connector ray
+                if showConnectors
+                    if na(ln)
+                        ln := line.new(origin, H, bar_index, H, color = highConnColor, width = highConnWidth, style = f_style(highConnStyleInput))
+                        array.set(hLine, i, ln)
+                    else
+                        line.set_x2(ln, bar_index)
+                        line.set_color(ln, highConnColor)
+                        line.set_width(ln, highConnWidth)
+                        line.set_style(ln, f_style(highConnStyleInput))
+                else if not na(ln)
+                    line.delete(ln)
+                    array.set(hLine, i, na)
                 box newBox = na
                 if showZones
                     newBox := box.new(left = bar_index, top = high, right = bar_index + zoneProjBars, bottom = close, border_color = highZoneBorder, border_width = highZoneBorderWidth, border_style = f_style(highZoneBorderStyleInput), bgcolor = highZoneColor)
                 array.set(hBox, i, newBox)
                 array.set(hSwept, i, true)
                 highZoneAlert := true
-            else if swept
-                bx = array.get(hBox, i)
-                if not na(bx)
-                    box.set_right(bx, bar_index + zoneProjBars)
+        else
+            bx = array.get(hBox, i)
+            if not na(bx)
+                box.set_right(bx, bar_index + zoneProjBars)
 
 // ─── Process low levels: sweep, kill, or expire ───
 if array.size(lLevel) > 0
@@ -197,22 +216,34 @@ if array.size(lLevel) > 0
             array.remove(lLine, i)
             array.remove(lLbl, i)
             array.remove(lOrigin, i)
-        else
-            ln2 = array.get(lLine, i)
-            if not na(ln2) and not swept
-                // level line freezes at the candle that closes the sweep
-                line.set_x2(ln2, bar_index)
-            if not swept and bear0 and low < L and close > L
+        else if not swept
+            ln = array.get(lLine, i)
+            if not na(ln)
+                line.set_x2(ln, bar_index)
+            if bear0 and low < L and close > L
+                // sweep confirmed: pending line becomes the connector ray
+                if showConnectors
+                    if na(ln)
+                        ln := line.new(origin, L, bar_index, L, color = lowConnColor, width = lowConnWidth, style = f_style(lowConnStyleInput))
+                        array.set(lLine, i, ln)
+                    else
+                        line.set_x2(ln, bar_index)
+                        line.set_color(ln, lowConnColor)
+                        line.set_width(ln, lowConnWidth)
+                        line.set_style(ln, f_style(lowConnStyleInput))
+                else if not na(ln)
+                    line.delete(ln)
+                    array.set(lLine, i, na)
                 box newBox = na
                 if showZones
                     newBox := box.new(left = bar_index, top = close, right = bar_index + zoneProjBars, bottom = low, border_color = lowZoneBorder, border_width = lowZoneBorderWidth, border_style = f_style(lowZoneBorderStyleInput), bgcolor = lowZoneColor)
                 array.set(lBox, i, newBox)
                 array.set(lSwept, i, true)
                 lowZoneAlert := true
-            else if swept
-                bx = array.get(lBox, i)
-                if not na(bx)
-                    box.set_right(bx, bar_index + zoneProjBars)
+        else
+            bx = array.get(lBox, i)
+            if not na(bx)
+                box.set_right(bx, bar_index + zoneProjBars)
 
 // ─── Alerts: one confirmed notification per bar close, covering both sides ───
 string alertSide = highZoneAlert and lowZoneAlert ? "High + Low sweep zone" : highZoneAlert ? "High sweep zone" : lowZoneAlert ? "Low sweep zone" : ""
