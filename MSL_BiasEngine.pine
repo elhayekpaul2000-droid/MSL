@@ -9,15 +9,17 @@ indicator(
 //──────────────────────────────────────────────────────────────────────
 // Model structure
 //
-//   Layer A · Price / Trend        EMA stack, BB %B, structure, HTF
-//   Layer B · Transacted data      volume profile, true delta, VWAP
-//   Layer C · Positioning          open interest vs price
-//   Layer D · Context              breadth, intermarket, rel. strength
+//   Layer A · Price / Trend     EMA stack, BB %B, structure, HTF
+//   Layer B · Transacted data   volume profile, true delta, VWAP
+//   Layer C · Positioning       open interest, put/call, perp basis, COT
+//   Layer D · Context           breadth, intermarket, relative strength
 //
 // Components are averaged inside their layer, then layers are averaged
-// into the final score. A component whose data feed is unavailable is
-// dropped and the remaining weights renormalise, so the score is never
-// diluted by a silent zero.
+// into the final score. A component whose feed is missing or whose
+// symbol field is blank is DROPPED and the remaining weights
+// renormalise, so an unavailable feed never dilutes the reading with a
+// silent zero. Every external request reads the last CLOSED bar of its
+// feed while "Non-repainting external data" is on.
 //──────────────────────────────────────────────────────────────────────
 
 const string G_MODEL  = "Bias Model"
@@ -25,7 +27,7 @@ const string G_ADAPT  = "Adaptive Weighting"
 const string G_LAYER  = "Layer Weights"
 const string G_PRICE  = "A · Price / Trend"
 const string G_DATA   = "B · Transacted Data"
-const string G_POS    = "C · Positioning (Open Interest)"
+const string G_POS    = "C · Positioning"
 const string G_CTX    = "D · Context / Intermarket"
 const string G_DASH   = "Dashboard"
 const string G_PLOTS  = "Chart Plots"
@@ -35,7 +37,7 @@ const string G_ALERTS = "Alerts"
 // Model inputs
 //──────────────────────────────────────────────────────────────────────
 
-int smoothLen = input.int(3, "Score smoothing (EMA bars)", minval = 1, maxval = 50, group = G_MODEL)
+int smoothLen  = input.int(3, "Score smoothing (EMA bars)", minval = 1, maxval = 50, group = G_MODEL)
 float biasTh   = input.float(20.0, "Bias threshold",        minval = 5.0,  maxval = 60.0, step = 1.0, group = G_MODEL)
 float strongTh = input.float(55.0, "Strong bias threshold", minval = 20.0, maxval = 95.0, step = 1.0, group = G_MODEL)
 
@@ -43,7 +45,7 @@ bool nonRepaint = input.bool(
      true,
      "Non-repainting external data",
      group = G_MODEL,
-     tooltip = "Uses the last CLOSED bar of every requested feed (HTF, OI, breadth, intermarket). Off = faster reaction, values can change intrabar."
+     tooltip = "Reads the last CLOSED bar of every requested feed (HTF, OI, put/call, basis, COT, breadth, intermarket). Off = faster reaction, values can change intrabar."
 )
 
 color colBull = input.color(color.new(#26a69a, 0), "Bullish", group = G_MODEL, inline = "c")
@@ -58,7 +60,7 @@ bool useAdapt = input.bool(
      true,
      "Weight components by measured edge",
      group = G_ADAPT,
-     tooltip = "Correlates each component's PAST score against the return that actually followed it. Components that have been predictive on this symbol get up-weighted, ones that have not get cut. No lookahead."
+     tooltip = "Correlates each component's PAST score against the return that actually followed it. Predictive components get up-weighted, unhelpful ones get cut. Uses only realised data — no lookahead."
 )
 
 int adaptFwd = input.int(20,  "Return horizon (bars)", minval = 2,   maxval = 200,  group = G_ADAPT)
@@ -77,9 +79,9 @@ float adaptBlend = input.float(
 // Layer weights
 //──────────────────────────────────────────────────────────────────────
 
-int wLayerA = input.int(25, "A · Price / Trend",   minval = 0, maxval = 100, group = G_LAYER)
+int wLayerA = input.int(20, "A · Price / Trend",   minval = 0, maxval = 100, group = G_LAYER)
 int wLayerB = input.int(35, "B · Transacted data", minval = 0, maxval = 100, group = G_LAYER)
-int wLayerC = input.int(15, "C · Positioning",     minval = 0, maxval = 100, group = G_LAYER)
+int wLayerC = input.int(20, "C · Positioning",     minval = 0, maxval = 100, group = G_LAYER)
 int wLayerD = input.int(25, "D · Context",         minval = 0, maxval = 100, group = G_LAYER)
 
 //──────────────────────────────────────────────────────────────────────
@@ -121,10 +123,10 @@ int  vpRefresh  = input.int(5, "Rebuild every N bars", minval = 1, maxval = 50, 
 
 bool useDelta = input.bool(true, "Volume delta (true intrabar)", group = G_DATA, inline = "b3")
 int  wDelta   = input.int(40, "w", minval = 0, maxval = 100, group = G_DATA, inline = "b3")
-string ltfMode = input.string("Auto", "Intrabar resolution", options = ["Auto", "Manual"], group = G_DATA, inline = "b4")
+string ltfMode   = input.string("Auto", "Intrabar resolution", options = ["Auto", "Manual"], group = G_DATA, inline = "b4")
 string ltfManual = input.timeframe("1", "", group = G_DATA, inline = "b4")
 int deltaLookback = input.int(20, "Delta lookback bars", minval = 2, group = G_DATA)
-bool useDeltaDiv = input.bool(true, "Penalise price / delta divergence", group = G_DATA)
+bool useDeltaDiv  = input.bool(true, "Penalise price / delta divergence", group = G_DATA)
 
 bool useVwap = input.bool(true, "VWAP", group = G_DATA, inline = "b5")
 int  wVwap   = input.int(25, "w", minval = 0, maxval = 100, group = G_DATA, inline = "b5")
@@ -133,16 +135,73 @@ float vwapMult = input.float(1.0, "σ", minval = 0.1, step = 0.1, group = G_DATA
 
 //──────────────────────────────────────────────────────────────────────
 // C · Positioning
+//
+// Put/call and perp basis are mapped through a crowd curve: the reading
+// is taken at face value up to `extreme σ`, then decays and inverts as
+// the crowd becomes over-committed. COT uses the same curve with the
+// fade switched off, because a commercial extreme IS the signal.
 //──────────────────────────────────────────────────────────────────────
 
-bool useOi = input.bool(
-     true,
-     "Open interest vs price",
+float posDead    = input.float(0.5, "Deadzone σ", minval = 0.0, maxval = 2.0,  step = 0.1, group = G_POS, inline = "c0")
+float posExtreme = input.float(1.5, "Extreme σ",  minval = 0.5, maxval = 5.0,  step = 0.1, group = G_POS, inline = "c0")
+
+bool useOi = input.bool(true, "Open interest vs price", group = G_POS, inline = "c1")
+int  wOi   = input.int(35, "w", minval = 0, maxval = 100, group = G_POS, inline = "c1")
+int  oiLen  = input.int(10,  "OI change lookback", minval = 1, maxval = 200, group = G_POS, inline = "c2")
+int  oiNorm = input.int(100, "Norm window", minval = 20, maxval = 1000, group = G_POS, inline = "c2")
+
+bool usePc = input.bool(true, "Put / call ratio", group = G_POS, inline = "c3")
+int  wPc   = input.int(20, "w", minval = 0, maxval = 100, group = G_POS, inline = "c3")
+string pcSym = input.symbol(
+     "USI:PCC",
+     "",
      group = G_POS,
-     tooltip = "Futures and perps only. Price up + OI up = new longs. Price up + OI down = short covering (weak). Silently drops out on symbols with no OI feed."
+     inline = "c3",
+     tooltip = "CBOE put/call. USI:PCC = total, USI:PCCE = equity only, USI:PCCI = index only. Drops out automatically if the symbol is unavailable on your plan."
 )
-int oiLen  = input.int(10,  "Change lookback", minval = 1, maxval = 200, group = G_POS)
-int oiNorm = input.int(100, "Normalisation window", minval = 20, maxval = 1000, group = G_POS)
+int  pcNorm = input.int(100, "Norm window", minval = 20, maxval = 1000, group = G_POS, inline = "c4")
+bool pcFade = input.bool(true, "Fade at extremes", group = G_POS, inline = "c4")
+
+bool useBasis = input.bool(true, "Perp basis (funding proxy)", group = G_POS, inline = "c5")
+int  wBasis   = input.int(25, "w", minval = 0, maxval = 100, group = G_POS, inline = "c5")
+string basisMode = input.string(
+     "Auto",
+     "Legs",
+     options = ["Auto", "Manual"],
+     group = G_POS,
+     inline = "c6",
+     tooltip = "Auto derives the perp/spot pair from the chart symbol using the .P convention (Binance, Bybit, OKX). Drops out on non-crypto symbols."
+)
+string perpSymIn = input.symbol("BINANCE:BTCUSDT.P", "Perp", group = G_POS, inline = "c7")
+string spotSymIn = input.symbol("BINANCE:BTCUSDT",   "Spot", group = G_POS, inline = "c7")
+int  basisNorm = input.int(200, "Norm window", minval = 20, maxval = 1000, group = G_POS, inline = "c8")
+bool basisFade = input.bool(true, "Fade at extremes", group = G_POS, inline = "c8")
+
+bool useCot = input.bool(true, "COT net positioning", group = G_POS, inline = "c9")
+int  wCot   = input.int(20, "w", minval = 0, maxval = 100, group = G_POS, inline = "c9")
+string cotLongSym = input.symbol(
+     "",
+     "Long series",
+     group = G_POS,
+     inline = "ca",
+     tooltip = "Paste the two COT series for your instrument from TradingView symbol search (type COT + your market). Leave blank and this component stays dropped."
+)
+string cotShortSym = input.symbol("", "Short series", group = G_POS, inline = "ca")
+string cotGroup = input.string(
+     "Commercials — follow",
+     "Group",
+     options = ["Commercials — follow", "Large specs — fade"],
+     group = G_POS,
+     tooltip = "Commercials are hedgers: an unusually long net position historically marks accumulation. Large specs are trend followers: an extreme net position marks crowding."
+)
+int cotNorm = input.int(
+     104,
+     "Norm window (weekly bars)",
+     minval = 20,
+     maxval = 520,
+     group = G_POS,
+     tooltip = "Converted into chart bars internally and capped at 1000, so the full window is only honoured on daily and higher charts."
+)
 
 //──────────────────────────────────────────────────────────────────────
 // D · Context / Intermarket
@@ -176,16 +235,16 @@ string rsSym = input.symbol("SPY", "", group = G_CTX, inline = "d7", tooltip = "
 // Display
 //──────────────────────────────────────────────────────────────────────
 
-bool showDash = input.bool(true, "Show dashboard", group = G_DASH)
-string dashPos  = input.string("Top right", "Position", options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group = G_DASH)
-string dashSize = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal", "Large"], group = G_DASH)
+bool showDash    = input.bool(true, "Show dashboard", group = G_DASH)
+string dashPos   = input.string("Top right", "Position", options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group = G_DASH)
+string dashSize  = input.string("Tiny", "Text size", options = ["Tiny", "Small", "Normal", "Large"], group = G_DASH)
 bool showWeights = input.bool(true, "Show live weights", group = G_DASH)
 
 bool showLayers = input.bool(false, "Plot layer scores in pane", group = G_PLOTS)
 bool colorBars  = input.bool(true,  "Colour price bars by bias", group = G_PLOTS)
-bool showEmas   = input.bool(false, "Plot EMAs on chart",   group = G_PLOTS)
-bool showVwapPl = input.bool(false, "Plot VWAP + bands",    group = G_PLOTS)
-bool showBbPl   = input.bool(false, "Plot Bollinger Bands", group = G_PLOTS)
+bool showEmas   = input.bool(false, "Plot EMAs on chart",    group = G_PLOTS)
+bool showVwapPl = input.bool(false, "Plot VWAP + bands",     group = G_PLOTS)
+bool showBbPl   = input.bool(false, "Plot Bollinger Bands",  group = G_PLOTS)
 bool showVaPl   = input.bool(false, "Plot POC / value area", group = G_PLOTS)
 
 bool alertFlips = input.bool(true, "Fire alert() on bias flips", group = G_ALERTS)
@@ -208,6 +267,17 @@ f_ctx(float src, int rocLen, int normLen, bool inverse) =>
     float s = f_clamp(z / 2.0, -1.0, 1.0)
     na(src) ? na : (inverse ? -s : s)
 
+// Crowd curve. |z| below `dead` reads as noise. Between `dead` and
+// `extreme` the signal ramps to full strength in the direction given by
+// `dirSign`. Past `extreme`, if `fade` is on, it decays through zero at
+// 1.5x and inverts to -1 at 2x — over-committed positioning. Continuous
+// at every joint, so no chatter at the thresholds.
+f_posmap(float z, float dead, float extreme, float dirSign, bool fade) =>
+    float a    = math.abs(z)
+    float span = math.max(extreme - dead, 0.1)
+    float g    = a <= dead ? 0.0 : a <= extreme ? (a - dead) / span : fade ? math.max(1.0 - 2.0 * (a - extreme) / math.max(extreme, 0.1), -1.0) : 1.0
+    f_clamp(dirSign * math.sign(z) * g, -1.0, 1.0)
+
 f_edge(float s, float ret, int fwd, int len, bool on, float blend) =>
     float c = nz(ta.correlation(s[fwd], ret, len))
     float m = 1.0 + (blend / 100.0) * f_clamp(c * 2.0, -1.0, 1.0)
@@ -219,9 +289,22 @@ f_txt(float s) =>
 f_col(float s) =>
     na(s) ? colNeut : s >= 0.15 ? colBull : s <= -0.15 ? colBear : colNeut
 
-int repOff = nonRepaint ? 1 : 0
+// A blank symbol field must never fall through to the chart symbol, so
+// requests are made against a harmless placeholder and the result is
+// discarded unless the field was actually filled in.
+f_filled(string s) =>
+    str.length(str.replace_all(s, " ", "")) > 0
+
+f_symOr(string s) =>
+    f_filled(s) ? s : syminfo.tickerid
+
+int repOff    = nonRepaint ? 1 : 0
 float safeVol = na(volume) ? 0.0 : volume
 float barRng  = math.max(high - low, syminfo.mintick)
+
+int chartSec     = timeframe.in_seconds(timeframe.period)
+string dailyTf   = chartSec >= 86400  ? timeframe.period : "D"
+string weeklyTf  = chartSec >= 604800 ? timeframe.period : "W"
 
 //──────────────────────────────────────────────────────────────────────
 // A1 · EMA stack
@@ -352,11 +435,9 @@ if not na(vpPoc)
         sVp := -0.5 * f_clamp((vpPoc - close) / math.max(vpPoc - vpVal, syminfo.mintick), 0.0, 1.0)
 
 //──────────────────────────────────────────────────────────────────────
-// B2 · True intrabar volume delta (falls back to a proxy if the
-//      lower-timeframe feed is unavailable on this bar)
+// B2 · True intrabar volume delta
 //──────────────────────────────────────────────────────────────────────
 
-int chartSec = timeframe.in_seconds(timeframe.period)
 string ltfAuto = chartSec >= 86400 ? "60" : chartSec >= 14400 ? "15" : chartSec >= 3600 ? "5" : "1"
 string ltfRes  = ltfMode == "Auto" ? ltfAuto : ltfManual
 
@@ -400,7 +481,7 @@ bool pxLo  = close <= ta.lowest(close, deltaLookback)
 bool cvdLo = cvd   <= ta.lowest(cvd,   deltaLookback)
 float divAdj = not useDeltaDiv ? 0.0 : pxHi and not cvdHi ? -0.35 : pxLo and not cvdLo ? 0.35 : 0.0
 
-float sDelta = barVolT > 0 or deltaTrue ? f_clamp(deltaRatio + divAdj, -1.0, 1.0) : na
+float sDelta = sumVolT > 0 ? f_clamp(deltaRatio + divAdj, -1.0, 1.0) : na
 
 //──────────────────────────────────────────────────────────────────────
 // B3 · Anchored VWAP with σ bands
@@ -434,7 +515,7 @@ float sVwap = na(vwapVal) ? na : f_clamp((close - vwapVal) / math.max(nz(vwapSd)
 // C1 · Open interest vs price
 //──────────────────────────────────────────────────────────────────────
 
-float oiVal = request.security(
+float oiRaw = request.security(
      syminfo.tickerid + "_OI",
      timeframe.period,
      close[repOff],
@@ -442,39 +523,121 @@ float oiVal = request.security(
      ignore_invalid_symbol = true
 )
 
-float dOi = not na(oiVal) and not na(oiVal[oiLen]) and oiVal[oiLen] != 0 ? oiVal / oiVal[oiLen] - 1.0 : na
-float dPx = close / close[oiLen] - 1.0
+float dOi   = not na(oiRaw) and not na(oiRaw[oiLen]) and oiRaw[oiLen] != 0 ? oiRaw / oiRaw[oiLen] - 1.0 : na
+float dPx   = close / close[oiLen] - 1.0
 float oiMag = f_clamp(math.abs(f_z(dPx, oiNorm)) / 2.0, 0.0, 1.0)
 
 float sOi = na(dOi) ? na : dPx > 0 and dOi > 0 ? oiMag : dPx > 0 and dOi <= 0 ? 0.3 * oiMag : dPx < 0 and dOi > 0 ? -oiMag : dPx < 0 and dOi <= 0 ? -0.3 * oiMag : 0.0
 
 //──────────────────────────────────────────────────────────────────────
+// C2 · Put / call ratio
+//
+// A rising ratio is defensive positioning, so the face-value direction
+// is bearish. Past the extreme it becomes capitulation and inverts.
+//──────────────────────────────────────────────────────────────────────
+
+bool pcCfg = f_filled(pcSym)
+
+// The z-score is computed INSIDE the request so that `pcNorm` counts
+// bars of the put/call feed itself, not bars of the chart timeframe.
+[pcRaw, pcZreq] = request.security(
+     f_symOr(pcSym),
+     dailyTf,
+     [close[repOff], f_z(close, pcNorm)[repOff]],
+     lookahead = barmerge.lookahead_off,
+     ignore_invalid_symbol = true
+)
+
+float pcVal = pcCfg ? pcRaw : na
+float pcZ   = nz(pcZreq)
+float sPc   = na(pcVal) ? na : f_posmap(pcZ, posDead, posExtreme, -1.0, pcFade)
+
+//──────────────────────────────────────────────────────────────────────
+// C3 · Perp basis (funding proxy)
+//
+// Perp trading above spot means leveraged longs are paying to hold the
+// position: confirming while moderate, exhaustion when extreme.
+//──────────────────────────────────────────────────────────────────────
+
+bool chartIsPerp = str.endswith(syminfo.tickerid, ".P")
+string perpAuto  = chartIsPerp ? syminfo.tickerid : syminfo.tickerid + ".P"
+string spotAuto  = chartIsPerp ? str.replace_all(syminfo.tickerid, ".P", "") : syminfo.tickerid
+
+string perpSym = basisMode == "Auto" ? perpAuto : f_symOr(perpSymIn)
+string spotSym = basisMode == "Auto" ? spotAuto : f_symOr(spotSymIn)
+bool basisCfg  = basisMode == "Auto" ? true : f_filled(perpSymIn) and f_filled(spotSymIn)
+
+float perpPx = request.security(perpSym, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float spotPx = request.security(spotSym, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+bool basisOk    = basisCfg and not na(perpPx) and not na(spotPx) and spotPx > 0
+float basisPct  = basisOk ? (perpPx / spotPx - 1.0) * 100.0 : na
+float basisZ    = f_z(nz(basisPct), basisNorm)
+float sBasis    = not basisOk ? na : f_posmap(basisZ, posDead, posExtreme, 1.0, basisFade)
+
+//──────────────────────────────────────────────────────────────────────
+// C4 · COT net positioning
+//──────────────────────────────────────────────────────────────────────
+
+bool cotCfg = f_filled(cotLongSym) and f_filled(cotShortSym)
+
+float cotLongRaw = request.security(f_symOr(cotLongSym),  weeklyTf, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float cotShortRaw = request.security(f_symOr(cotShortSym), weeklyTf, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+// Net position spans two symbols, so its z-score cannot be computed
+// inside one request. The weekly window is converted into chart bars
+// and capped at the history buffer — which is why COT is meant for
+// daily and higher charts (a daily chart needs 104 x 7 = 728 bars).
+int cotBarsPerWeek = math.max(1, int(math.round(604800.0 / math.max(chartSec, 1))))
+int cotWin = math.min(cotNorm * cotBarsPerWeek, 1000)
+
+bool cotOk    = cotCfg and not na(cotLongRaw) and not na(cotShortRaw)
+float cotNet  = cotOk ? cotLongRaw - cotShortRaw : na
+float cotZ    = f_z(nz(cotNet), cotWin)
+float cotSign = cotGroup == "Large specs — fade" ? -1.0 : 1.0
+float sCot    = not cotOk ? na : f_posmap(cotZ, posDead, posExtreme, cotSign, false)
+
+//──────────────────────────────────────────────────────────────────────
 // D · Context feeds
 //──────────────────────────────────────────────────────────────────────
 
-float breadthNetRaw = request.security(breadthNetSym, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
-float breadthPctRaw = request.security(breadthPctSym, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
-float inter1Raw     = request.security(interSym1, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
-float inter2Raw     = request.security(interSym2, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
-float inter3Raw     = request.security(interSym3, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
-float rsRaw         = request.security(rsSym,     timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+bool bnCfg = f_filled(breadthNetSym)
+bool bpCfg = f_filled(breadthPctSym)
+bool i1Cfg = f_filled(interSym1)
+bool i2Cfg = f_filled(interSym2)
+bool i3Cfg = f_filled(interSym3)
+bool rsCfg = f_filled(rsSym)
 
-// Net breadth: already zero-centred, so read level and slope
-float bnZ = f_z(nz(breadthNetRaw), ctxNorm)
-float sBreadthNet = na(breadthNetRaw) ? na : f_clamp(0.6 * f_clamp(bnZ / 2.0, -1.0, 1.0) + 0.4 * math.sign(nz(breadthNetRaw)), -1.0, 1.0)
+float bnRaw = request.security(f_symOr(breadthNetSym), timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float bpRaw = request.security(f_symOr(breadthPctSym), timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float i1Raw = request.security(f_symOr(interSym1),     timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float i2Raw = request.security(f_symOr(interSym2),     timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float i3Raw = request.security(f_symOr(interSym3),     timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
+float rsRaw = request.security(f_symOr(rsSym),         timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
 
-// % above MA: 0..100 scale, 50 is neutral
-float sBreadthPct = na(breadthPctRaw) ? na : f_clamp((breadthPctRaw - 50.0) / 40.0, -1.0, 1.0)
+float breadthNetVal = bnCfg ? bnRaw : na
+float breadthPctVal = bpCfg ? bpRaw : na
+float inter1Val     = i1Cfg ? i1Raw : na
+float inter2Val     = i2Cfg ? i2Raw : na
+float inter3Val     = i3Cfg ? i3Raw : na
+float rsBenchVal    = rsCfg ? rsRaw : na
 
-float sInt1 = f_ctx(inter1Raw, ctxRoc, ctxNorm, interInv1)
-float sInt2 = f_ctx(inter2Raw, ctxRoc, ctxNorm, interInv2)
-float sInt3 = f_ctx(inter3Raw, ctxRoc, ctxNorm, interInv3)
+// Net breadth is already zero-centred: read level and extremity together
+float bnZ = f_z(nz(breadthNetVal), ctxNorm)
+float sBreadthNet = na(breadthNetVal) ? na : f_clamp(0.6 * f_clamp(bnZ / 2.0, -1.0, 1.0) + 0.4 * math.sign(nz(breadthNetVal)), -1.0, 1.0)
+
+// Percent-above-MA is a 0..100 scale with 50 neutral
+float sBreadthPct = na(breadthPctVal) ? na : f_clamp((breadthPctVal - 50.0) / 40.0, -1.0, 1.0)
+
+float sInt1 = f_ctx(inter1Val, ctxRoc, ctxNorm, interInv1)
+float sInt2 = f_ctx(inter2Val, ctxRoc, ctxNorm, interInv2)
+float sInt3 = f_ctx(inter3Val, ctxRoc, ctxNorm, interInv3)
 
 float intSum = nz(sInt1) + nz(sInt2) + nz(sInt3)
 int   intCnt = (na(sInt1) ? 0 : 1) + (na(sInt2) ? 0 : 1) + (na(sInt3) ? 0 : 1)
 float sInter = intCnt > 0 ? intSum / intCnt : na
 
-float rsRatio = na(rsRaw) or rsRaw == 0 ? na : close / rsRaw
+float rsRatio = na(rsBenchVal) or rsBenchVal == 0 ? na : close / rsBenchVal
 float sRs = f_ctx(rsRatio, ctxRoc, ctxNorm, false)
 
 //──────────────────────────────────────────────────────────────────────
@@ -483,50 +646,57 @@ float sRs = f_ctx(rsRatio, ctxRoc, ctxNorm, false)
 
 float fwdRet = close[adaptFwd] != 0 ? (close - close[adaptFwd]) / close[adaptFwd] : 0.0
 
-float eEma        = f_edge(nz(sEma),         fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eBb         = f_edge(nz(sBb),          fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eStruct     = f_edge(nz(sStruct),      fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eHtf        = f_edge(nz(sHtf),         fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eVp         = f_edge(nz(sVp),          fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eDelta      = f_edge(nz(sDelta),       fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eVwap       = f_edge(nz(sVwap),        fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eOi         = f_edge(nz(sOi),          fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eBreadthNet = f_edge(nz(sBreadthNet),  fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eBreadthPct = f_edge(nz(sBreadthPct),  fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eInter      = f_edge(nz(sInter),       fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
-float eRs         = f_edge(nz(sRs),          fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eEma        = f_edge(nz(sEma),        fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eBb         = f_edge(nz(sBb),         fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eStruct     = f_edge(nz(sStruct),     fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eHtf        = f_edge(nz(sHtf),        fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eVp         = f_edge(nz(sVp),         fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eDelta      = f_edge(nz(sDelta),      fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eVwap       = f_edge(nz(sVwap),       fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eOi         = f_edge(nz(sOi),         fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float ePc         = f_edge(nz(sPc),         fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eBasis      = f_edge(nz(sBasis),      fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eCot        = f_edge(nz(sCot),        fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eBreadthNet = f_edge(nz(sBreadthNet), fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eBreadthPct = f_edge(nz(sBreadthPct), fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eInter      = f_edge(nz(sInter),      fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
+float eRs         = f_edge(nz(sRs),         fwdRet, adaptFwd, adaptLen, useAdapt, adaptBlend)
 
 //──────────────────────────────────────────────────────────────────────
 // Composite
 //──────────────────────────────────────────────────────────────────────
 
-array<string> cName = array.from("EMA stack", "Bollinger %B", "Structure", "HTF trend", "Volume profile", "Volume delta", "VWAP", "Open interest", "Breadth net", "Breadth % > MA", "Intermarket", "Rel. strength")
-array<float>  cScore = array.from(sEma, sBb, sStruct, sHtf, sVp, sDelta, sVwap, sOi, sBreadthNet, sBreadthPct, sInter, sRs)
-array<bool>   cOn    = array.from(useEma, useBb, useStruct, useHtf, useVp, useDelta, useVwap, useOi, useBreadthNet, useBreadthPct, useInter, useRs)
-array<float>  cW     = array.from(float(wEma), float(wBb), float(wStruct), float(wHtf), float(wVp), float(wDelta), float(wVwap), 100.0, float(wBreadthNet), float(wBreadthPct), float(wInter), float(wRs))
-array<float>  cEdge  = array.from(eEma, eBb, eStruct, eHtf, eVp, eDelta, eVwap, eOi, eBreadthNet, eBreadthPct, eInter, eRs)
-array<int>    cLayer = array.from(0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 3, 3)
+const int N_COMP  = 15
+const int N_LAYER = 4
+
+array<string> cName = array.from("EMA stack", "Bollinger %B", "Structure", "HTF trend", "Volume profile", "Volume delta", "VWAP", "Open interest", "Put / call", "Perp basis", "COT net", "Breadth net", "Breadth % > MA", "Intermarket", "Rel. strength")
+array<float>  cScore = array.from(sEma, sBb, sStruct, sHtf, sVp, sDelta, sVwap, sOi, sPc, sBasis, sCot, sBreadthNet, sBreadthPct, sInter, sRs)
+array<bool>   cOn    = array.from(useEma, useBb, useStruct, useHtf, useVp, useDelta, useVwap, useOi, usePc, useBasis, useCot, useBreadthNet, useBreadthPct, useInter, useRs)
+array<float>  cW     = array.from(float(wEma), float(wBb), float(wStruct), float(wHtf), float(wVp), float(wDelta), float(wVwap), float(wOi), float(wPc), float(wBasis), float(wCot), float(wBreadthNet), float(wBreadthPct), float(wInter), float(wRs))
+array<float>  cEdge  = array.from(eEma, eBb, eStruct, eHtf, eVp, eDelta, eVwap, eOi, ePc, eBasis, eCot, eBreadthNet, eBreadthPct, eInter, eRs)
+array<int>    cLayer = array.from(0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3)
 
 array<string> lName = array.from("A · Price / Trend", "B · Transacted data", "C · Positioning", "D · Context")
 array<float>  lW    = array.from(float(wLayerA), float(wLayerB), float(wLayerC), float(wLayerD))
 
-array<float> lNum = array.new<float>(4, 0.0)
-array<float> lDen = array.new<float>(4, 0.0)
-array<float> cLive = array.new<float>(12, 0.0)
+array<float> lNum  = array.new<float>(N_LAYER, 0.0)
+array<float> lDen  = array.new<float>(N_LAYER, 0.0)
+array<float> cLive = array.new<float>(N_COMP, 0.0)
 
-for i = 0 to array.size(cName) - 1
+for i = 0 to N_COMP - 1
     float s = array.get(cScore, i)
     if array.get(cOn, i) and not na(s)
         int   L = array.get(cLayer, i)
         float w = array.get(cW, i) * array.get(cEdge, i)
-        array.set(cLive, i, w)
-        array.set(lNum, L, array.get(lNum, L) + w * s)
-        array.set(lDen, L, array.get(lDen, L) + w)
+        if w > 0
+            array.set(cLive, i, w)
+            array.set(lNum, L, array.get(lNum, L) + w * s)
+            array.set(lDen, L, array.get(lDen, L) + w)
 
-array<float> lScore = array.new<float>(4, na)
+array<float> lScore = array.new<float>(N_LAYER, na)
 float num = 0.0
 float den = 0.0
-for l = 0 to 3
+for l = 0 to N_LAYER - 1
     if array.get(lDen, l) > 0
         float ls = array.get(lNum, l) / array.get(lDen, l)
         array.set(lScore, l, ls)
@@ -567,7 +737,7 @@ plot(showEmas ? emaF : na, "EMA fast", color = color.new(#42bda8, 0), force_over
 plot(showEmas ? emaM : na, "EMA mid",  color = color.new(#f5a623, 0), force_overlay = true)
 plot(showEmas ? emaS : na, "EMA slow", color = color.new(#9c27b0, 0), linewidth = 2, force_overlay = true)
 
-plot(showVwapPl ? vwapVal : na, "VWAP",   color = color.new(#2962ff, 0), linewidth = 2, force_overlay = true)
+plot(showVwapPl ? vwapVal : na, "VWAP",    color = color.new(#2962ff, 0), linewidth = 2, force_overlay = true)
 plot(showVwapPl ? vwapUp  : na, "VWAP +σ", color = color.new(#2962ff, 55), force_overlay = true)
 plot(showVwapPl ? vwapDn  : na, "VWAP -σ", color = color.new(#2962ff, 55), force_overlay = true)
 
@@ -583,10 +753,12 @@ plot(showVaPl ? vpVal : na, "VAL", color = color.new(#ff9800, 55), style = plot.
 // Dashboard
 //──────────────────────────────────────────────────────────────────────
 
+const int DASH_ROWS = 24
+
 var table dash = table.new(
      dashPos == "Top right" ? position.top_right : dashPos == "Middle right" ? position.middle_right : dashPos == "Bottom right" ? position.bottom_right : dashPos == "Top left" ? position.top_left : position.bottom_left,
      4,
-     22,
+     DASH_ROWS,
      border_width = 1,
      border_color = color.new(color.gray, 70),
      frame_width = 1,
@@ -604,7 +776,7 @@ if showDash and barstate.islast
     table.cell(dash, 3, 0, showWeights ? "wt" : "", text_color = color.new(color.white, 30), bgcolor = hdrBg, text_size = txtSize)
 
     int rowN = 1
-    for l = 0 to 3
+    for l = 0 to N_LAYER - 1
         float ls = array.get(lScore, l)
         table.cell(dash, 0, rowN, array.get(lName, l), text_color = color.new(color.white, 10), bgcolor = layBg, text_size = txtSize, text_halign = text.align_left)
         table.cell(dash, 1, rowN, f_txt(ls), text_color = f_col(ls), bgcolor = layBg, text_size = txtSize)
@@ -612,26 +784,27 @@ if showDash and barstate.islast
         table.cell(dash, 3, rowN, showWeights and not na(ls) ? str.tostring(array.get(lW, l), "0") : "", text_color = color.new(color.white, 30), bgcolor = layBg, text_size = txtSize)
         rowN := rowN + 1
 
-        for i = 0 to array.size(cName) - 1
+        for i = 0 to N_COMP - 1
             if array.get(cLayer, i) == l
-                float s = array.get(cScore, i)
-                bool on = array.get(cOn, i)
+                float s  = array.get(cScore, i)
+                bool on  = array.get(cOn, i)
                 string tag = not on ? "off" : na(s) ? "no data" : f_txt(s)
-                color tc = not on or na(s) ? color.new(color.gray, 40) : f_col(s)
-                table.cell(dash, 0, rowN, "   " + array.get(cName, i), text_color = color.new(color.gray, 10), text_size = txtSize, text_halign = text.align_left)
+                color tc   = not on or na(s) ? color.new(color.gray, 40) : f_col(s)
+                table.cell(dash, 0, rowN, "  " + array.get(cName, i), text_color = color.new(color.gray, 10), text_size = txtSize, text_halign = text.align_left)
                 table.cell(dash, 1, rowN, tag, text_color = tc, text_size = txtSize)
                 table.cell(dash, 2, rowN, on and not na(s) ? str.tostring(s * 100, "0") + "%" : "—", text_color = tc, text_size = txtSize)
                 table.cell(dash, 3, rowN, showWeights and array.get(cLive, i) > 0 ? str.tostring(array.get(cLive, i), "0") : "", text_color = color.new(color.gray, 40), text_size = txtSize)
                 rowN := rowN + 1
 
-    string dq = (deltaTrue ? "delta:true" : "delta:proxy") + (na(oiVal) ? "  oi:—" : "  oi:live") + (na(breadthNetRaw) and na(breadthPctRaw) ? "  breadth:—" : "  breadth:live")
+    string feedsA = (deltaTrue ? "Δ true" : "Δ proxy") + (na(oiRaw) ? "  OI —" : "  OI ✓") + (na(pcVal) ? "  P/C —" : "  P/C ✓")
+    string feedsB = (basisOk ? "basis ✓" : "basis —") + (cotOk ? "  COT ✓" : "  COT —") + (na(breadthNetVal) and na(breadthPctVal) ? "  breadth —" : "  breadth ✓")
     table.cell(dash, 0, rowN, "Data feeds", text_color = color.new(color.gray, 10), bgcolor = layBg, text_size = txtSize, text_halign = text.align_left)
-    table.cell(dash, 1, rowN, dq, text_color = color.new(color.gray, 10), bgcolor = layBg, text_size = txtSize)
-    table.cell(dash, 2, rowN, useAdapt ? "adaptive" : "fixed", text_color = color.new(color.gray, 10), bgcolor = layBg, text_size = txtSize)
-    table.cell(dash, 3, rowN, "", bgcolor = layBg)
+    table.cell(dash, 1, rowN, feedsA, text_color = color.new(color.gray, 10), bgcolor = layBg, text_size = txtSize)
+    table.cell(dash, 2, rowN, feedsB, text_color = color.new(color.gray, 10), bgcolor = layBg, text_size = txtSize)
+    table.cell(dash, 3, rowN, useAdapt ? "adapt" : "fixed", text_color = color.new(color.gray, 10), bgcolor = layBg, text_size = txtSize)
     rowN := rowN + 1
 
-    for r = rowN to 21
+    for r = rowN to DASH_ROWS - 1
         table.cell(dash, 0, r, "")
         table.cell(dash, 1, r, "")
         table.cell(dash, 2, r, "")
