@@ -133,7 +133,7 @@ bool showZoneText = input.bool(
 )
 
 string zoneTextSizeInput = input.string(
-     "Small",
+     "Normal",
      "Label size",
      options = [
          "Tiny",
