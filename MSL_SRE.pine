@@ -1,0 +1,30 @@
+//@version=6
+indicator("MSL- SRE", overlay = true, max_labels_count = 500)
+
+//=====================  INPUTS  =====================
+gL = "▸ Highs & Lows"
+showHi  = input.bool(true, "Show Highs", group = gL)
+showLo  = input.bool(true, "Show Lows",  group = gL)
+hiColor = input.color(color.red,  "High Color", group = gL)
+loColor = input.color(color.teal, "Low Color",  group = gL)
+txtSz   = input.string("small", "Label Size", options = ["tiny","small","normal","large","huge"], group = gL)
+
+//=====================  HELPERS  =====================
+f_sz(s) => s == "tiny" ? size.tiny : s == "small" ? size.small : s == "normal" ? size.normal : s == "large" ? size.large : size.huge
+
+//=====================  PATTERN DETECTION  =====================
+bull = close > open
+bear = close < open
+
+// HIGH: bull → bear → bear, or bull → bear → bull that doesn't close above the first bull's close
+hiSig = bull[2] and bear[1] and (bear or (bull and close <= close[2])) and high[1] < high[2] and high < high[2]
+
+// LOW: bear → bull → bull, or bear → bull → bear that doesn't close below the first bear's close
+loSig = bear[2] and bull[1] and (bull or (bear and close >= close[2])) and low[1] > low[2] and low > low[2]
+
+//=====================  PLOT  =====================
+if showHi and hiSig
+    label.new(bar_index - 2, high[2], text = "H", style = label.style_label_down, color = na, textcolor = hiColor, size = f_sz(txtSz))
+
+if showLo and loSig
+    label.new(bar_index - 2, low[2], text = "L", style = label.style_label_up, color = na, textcolor = loColor, size = f_sz(txtSz))
