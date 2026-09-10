@@ -558,7 +558,9 @@ var array<ActiveZone> bearActive =
 // Total exit-marker labels currently tracked by our own bookkeeping. Kept in
 // sync with every marker create/release so we never let our own reference
 // count exceed the indicator's max_labels_count budget (see fix #3 below).
-var int trackedExitMarkerCount = 0
+// Held as a single-element array (a mutable reference) because Pine Script
+// functions cannot reassign a plain global var directly.
+var array<int> trackedExitMarkerCountBox = array.new<int>(1, 0)
 
 //──────────────────────────────────────────────────────────────────────
 // Time-based projection helper
@@ -728,7 +730,11 @@ releaseZoneMarkers(
             label.delete(ownedMarker.drawing)
             // FIX #3: keep our own live-label count in sync so it never
             // silently drifts past max_labels_count (see createExitMarker).
-            trackedExitMarkerCount -= 1
+            array.set(
+                 trackedExitMarkerCountBox,
+                 0,
+                 array.get(trackedExitMarkerCountBox, 0) - 1
+             )
 
         array.remove(
              zone.exitMarkers,
@@ -768,7 +774,7 @@ createExitMarker(
  ) =>
     label newMarkerLabel = na
 
-    if trackedExitMarkerCount < MAX_TRACKED_EXIT_MARKERS
+    if array.get(trackedExitMarkerCountBox, 0) < MAX_TRACKED_EXIT_MARKERS
         string locationInput =
              bullish
              ? bullExitMarkerLocationInput
@@ -854,7 +860,11 @@ createExitMarker(
              size = markerSize
          )
 
-        trackedExitMarkerCount += 1
+        array.set(
+             trackedExitMarkerCountBox,
+             0,
+             array.get(trackedExitMarkerCountBox, 0) + 1
+         )
 
     newMarkerLabel
 
