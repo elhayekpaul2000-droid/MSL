@@ -303,6 +303,14 @@ f_filled(string s) =>
 f_symOr(string s) =>
     f_filled(s) ? s : syminfo.tickerid
 
+// syminfo.tickerid carries session, adjustment and replay state — under
+// Bar Replay it is a JSON blob, not "EXCHANGE:SYMBOL". Passing it to
+// request.security UNCHANGED is correct and preserves those settings,
+// but anything CONCATENATED onto it produces a malformed symbol that
+// ignore_invalid_symbol cannot rescue, because a format error is thrown
+// before the symbol is ever looked up. Derived tickers use this instead.
+string baseSym = str.length(syminfo.prefix) > 0 ? syminfo.prefix + ":" + syminfo.ticker : syminfo.ticker
+
 int repOff    = nonRepaint ? 1 : 0
 float safeVol = na(volume) ? 0.0 : volume
 float barRng  = math.max(high - low, syminfo.mintick)
@@ -529,7 +537,7 @@ float sVwap = na(vwapVal) or vwapBars < VWAP_MIN_BARS or nz(vwapSd) <= 0 ? na : 
 //──────────────────────────────────────────────────────────────────────
 
 float oiRaw = request.security(
-     syminfo.tickerid + "_OI",
+     baseSym + "_OI",
      timeframe.period,
      close[repOff],
      lookahead = barmerge.lookahead_off,
@@ -576,9 +584,9 @@ float sPc   = na(pcVal) ? na : f_posmap(pcZ, posDead, posExtreme, -1.0, pcFade)
 // position: confirming while moderate, exhaustion when extreme.
 //──────────────────────────────────────────────────────────────────────
 
-bool chartIsPerp = str.endswith(syminfo.tickerid, ".P")
-string perpAuto  = chartIsPerp ? syminfo.tickerid : syminfo.tickerid + ".P"
-string spotAuto  = chartIsPerp ? str.substring(syminfo.tickerid, 0, str.length(syminfo.tickerid) - 2) : syminfo.tickerid
+bool chartIsPerp = str.endswith(syminfo.ticker, ".P")
+string perpAuto  = chartIsPerp ? baseSym : baseSym + ".P"
+string spotAuto  = chartIsPerp ? (str.length(syminfo.prefix) > 0 ? syminfo.prefix + ":" : "") + str.substring(syminfo.ticker, 0, str.length(syminfo.ticker) - 2) : baseSym
 
 string perpSym = basisMode == "Auto" ? perpAuto : f_symOr(perpSymIn)
 string spotSym = basisMode == "Auto" ? spotAuto : f_symOr(spotSymIn)
