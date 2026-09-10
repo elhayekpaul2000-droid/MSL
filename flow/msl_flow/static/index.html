@@ -1,0 +1,487 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MSL Flow</title>
+<style>
+  /* Light is the base; dark is selected, not an automatic flip. */
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f4f2;
+    --surface-1: #fcfcfb;
+    --surface-2: #eceae5;
+    --border:    #dcdad4;
+    --text-1:    #0b0b0b;
+    --text-2:    #52514e;
+    --text-3:    #85837c;
+    --buy:       #2a78d6;   /* blue  — buying pressure */
+    --sell:      #e34948;   /* red   — selling pressure */
+    --cvd:       #1baf7a;   /* aqua  — its own panel */
+    --neutral:   #f0efec;   /* diverging midpoint */
+    --grid:      #e4e2dc;
+    --good:      #0ca30c;
+    --critical:  #d03b3b;
+    --warning:   #fab219;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-0: #111110;
+      --surface-1: #1a1a19;
+      --surface-2: #232322;
+      --border:    #333331;
+      --text-1:    #ffffff;
+      --text-2:    #c3c2b7;
+      --text-3:    #8b8a82;
+      --buy:       #3987e5;
+      --sell:      #e66767;
+      --cvd:       #199e70;
+      --neutral:   #383835;
+      --grid:      #2a2a28;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px;
+    background: var(--surface-0); color: var(--text-1);
+    font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 14px; margin: 0; letter-spacing: .02em; }
+  .muted { color: var(--text-3); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  header { display: flex; justify-content: space-between; align-items: center;
+           gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+
+  .tabs { display: flex; gap: 4px; }
+  .tab { padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px;
+         background: var(--surface-1); color: var(--text-2); cursor: pointer;
+         font-size: 12px; font-weight: 500; }
+  .tab[aria-selected="true"] { background: var(--surface-2); color: var(--text-1);
+         border-color: var(--text-3); }
+
+  .status { display: flex; gap: 8px; align-items: center; font-size: 11px;
+            color: var(--text-2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3);
+         display: inline-block; }
+  .dot.live { background: var(--good); }
+  .dot.down { background: var(--critical); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(122px, 1fr));
+           gap: 8px; margin-bottom: 10px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border);
+          border-radius: 8px; padding: 8px 10px; }
+  .tile .k { font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+             color: var(--text-3); white-space: nowrap; }
+  .tile .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums;
+             margin-top: 2px; }
+  .tile .s { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+  .grid { display: grid; grid-template-columns: 2.2fr 1fr; gap: 10px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--surface-1); border: 1px solid var(--border);
+           border-radius: 8px; padding: 10px; position: relative; }
+  .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+              color: var(--text-3); margin: 0 0 8px; font-weight: 600;
+              display: flex; justify-content: space-between; align-items: baseline; }
+  .legend { display: flex; gap: 10px; font-size: 10px; color: var(--text-2);
+            text-transform: none; letter-spacing: 0; font-weight: 500; }
+  .swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block;
+            margin-right: 4px; vertical-align: -1px; }
+  canvas { display: block; width: 100%; }
+
+  .tooltip { position: fixed; pointer-events: none; z-index: 20; display: none;
+             background: var(--surface-2); border: 1px solid var(--border);
+             border-radius: 6px; padding: 6px 8px; font-size: 11px;
+             font-variant-numeric: tabular-nums; color: var(--text-1);
+             box-shadow: 0 4px 14px rgba(0,0,0,.25); white-space: nowrap; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 11px;
+          font-variant-numeric: tabular-nums; }
+  th { text-align: right; font-weight: 500; color: var(--text-3); padding: 3px 4px;
+       font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+  th:first-child, td:first-child { text-align: left; }
+  td { text-align: right; padding: 3px 4px; border-top: 1px solid var(--grid); }
+  .buy  { color: var(--buy); }
+  .sell { color: var(--sell); }
+  .stack { display: grid; gap: 10px; }
+</style>
+
+<header>
+  <div class="row">
+    <h1>MSL FLOW</h1>
+    <div class="tabs" id="tabs" role="tablist"></div>
+  </div>
+  <div class="status">
+    <span><span class="dot" id="dot-ws"></span> feed</span>
+    <span><span class="dot" id="dot-book"></span> book</span>
+    <span class="muted" id="health">connecting…</span>
+  </div>
+</header>
+
+<div class="tiles" id="tiles"></div>
+
+<div class="grid">
+  <div class="stack">
+    <div class="panel">
+      <h2>Depth heatmap
+        <span class="legend">
+          <span><span class="swatch" style="background:var(--buy)"></span>bid</span>
+          <span><span class="swatch" style="background:var(--sell)"></span>ask</span>
+          <span class="muted">resting notional · 150bps either side of mid</span>
+        </span>
+      </h2>
+      <canvas id="heat" height="300"></canvas>
+    </div>
+    <div class="panel">
+      <h2>Mid price <span class="legend muted">last 5 minutes</span></h2>
+      <canvas id="price" height="110"></canvas>
+    </div>
+    <div class="panel">
+      <h2>Cumulative volume delta <span class="legend muted">signed taker flow, USD</span></h2>
+      <canvas id="cvd" height="110"></canvas>
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="panel">
+      <h2>Liquidation clusters
+        <span class="legend">
+          <span><span class="swatch" style="background:var(--sell)"></span>longs → forced sell</span>
+          <span><span class="swatch" style="background:var(--buy)"></span>shorts → forced buy</span>
+        </span>
+      </h2>
+      <canvas id="liq" height="260"></canvas>
+      <p class="muted" style="font-size:10px;margin:6px 0 0">
+        Liquidations that have already printed, grouped by price. Not a projection
+        of where future liquidations sit — no exchange publishes that.
+      </p>
+    </div>
+    <div class="panel">
+      <h2>Large prints <span class="legend muted">single fills over threshold</span></h2>
+      <table id="prints"><thead><tr>
+        <th>Time</th><th>Side</th><th>Price</th><th>USD</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tip"></div>
+
+<script>
+// Older Safari/Firefox lack roundRect; the ladder must still draw.
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h) {
+    this.rect(x, y, w, h); return this;
+  };
+}
+const $ = (id) => document.getElementById(id);
+const tip = $("tip");
+let SNAP = {}, SYMBOLS = [], active = null, health = {};
+
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmtUsd = (v) => v == null ? "—" :
+  Math.abs(v) >= 1e9 ? (v/1e9).toFixed(2)+"B" :
+  Math.abs(v) >= 1e6 ? (v/1e6).toFixed(2)+"M" :
+  Math.abs(v) >= 1e3 ? (v/1e3).toFixed(1)+"K" : v.toFixed(0);
+const fmtSigned = (v, d=2) => v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(d);
+const fmtPx = (v) => v == null ? "—" : v.toLocaleString(undefined,
+  {minimumFractionDigits: v < 10 ? 4 : 2, maximumFractionDigits: v < 10 ? 4 : 2});
+
+// Canvas sized for the device pixel ratio, or every line is soft.
+function prep(cv) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.height / (cv._dpr || dpr) || cv.clientHeight;
+  const hh = parseInt(cv.getAttribute("height"), 10);
+  cv.width = Math.max(1, Math.floor(w * dpr));
+  cv.height = Math.max(1, Math.floor(hh * dpr));
+  cv.style.height = hh + "px";
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, hh);
+  cv._dpr = dpr;
+  return { ctx, w, h: hh };
+}
+
+function showTip(ev, html) {
+  tip.innerHTML = html;
+  tip.style.display = "block";
+  const pad = 14, r = tip.getBoundingClientRect();
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - pad;
+  if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - pad;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+const hideTip = () => { tip.style.display = "none"; };
+
+/* ── Depth heatmap ──────────────────────────────────────────────────
+   Diverging encoding: one hue per side, neutral surface at zero.
+   Magnitude is carried by alpha against the panel surface, so a thin
+   book recedes rather than shouting.                                */
+function drawHeat(s) {
+  const cv = $("heat"), { ctx, w, h } = prep(cv);
+  const rows = s.heatmap || [];
+  cv._rows = rows;
+  if (!rows.length) return;
+
+  let peak = 0;
+  for (const r of rows) for (const v of Object.values(r.buckets || {}))
+    peak = Math.max(peak, Math.abs(v));
+  if (peak <= 0) return;
+
+  let lo = Infinity, hi = -Infinity;
+  for (const r of rows) {
+    if (!r.mid) continue;
+    for (const k of Object.keys(r.buckets)) {
+      const p = r.mid + (+k) * r.bucket_size;
+      lo = Math.min(lo, p); hi = Math.max(hi, p);
+    }
+  }
+  if (!isFinite(lo) || hi <= lo) return;
+  cv._px = { lo, hi };
+
+  const colW = w / rows.length;
+  const buy = css("--buy"), sell = css("--sell");
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r.mid) continue;
+    const bh = Math.max(1.5, (r.bucket_size / (hi - lo)) * h);
+    for (const [k, v] of Object.entries(r.buckets)) {
+      const p = r.mid + (+k) * r.bucket_size;
+      const y = h - ((p - lo) / (hi - lo)) * h;
+      // sqrt keeps mid-sized resting size visible instead of only the wall
+      const a = Math.min(1, Math.sqrt(Math.abs(v) / peak));
+      ctx.globalAlpha = 0.08 + a * 0.9;
+      ctx.fillStyle = v > 0 ? buy : sell;
+      ctx.fillRect(i * colW, y - bh / 2, Math.max(1, colW + 0.5), bh);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // mid-price track, drawn over the field
+  ctx.strokeStyle = css("--text-2"); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  rows.forEach((r, i) => {
+    if (!r.mid) return;
+    const y = h - ((r.mid - lo) / (hi - lo)) * h;
+    i ? ctx.lineTo(i * colW + colW / 2, y) : ctx.moveTo(i * colW + colW / 2, y);
+  });
+  ctx.stroke(); ctx.setLineDash([]);
+
+  ctx.fillStyle = css("--text-3"); ctx.font = "10px ui-monospace, monospace";
+  ctx.textAlign = "right";
+  ctx.fillText(fmtPx(hi), w - 4, 10);
+  ctx.fillText(fmtPx(lo), w - 4, h - 3);
+}
+
+$("heat").addEventListener("mousemove", (ev) => {
+  const cv = $("heat"), rows = cv._rows, px = cv._px;
+  if (!rows || !rows.length || !px) return hideTip();
+  const b = cv.getBoundingClientRect();
+  const i = Math.min(rows.length - 1, Math.max(0, Math.floor((ev.clientX - b.left) / (b.width / rows.length))));
+  const price = px.lo + (1 - (ev.clientY - b.top) / b.height) * (px.hi - px.lo);
+  const r = rows[i];
+  if (!r || !r.mid) return hideTip();
+  const k = Math.round((price - r.mid) / r.bucket_size);
+  const v = r.buckets[k] || 0;
+  const side = v > 0 ? "bid" : v < 0 ? "ask" : "—";
+  showTip(ev, `<b>${fmtPx(price)}</b><br>${side} resting $${fmtUsd(Math.abs(v))}` +
+              `<br><span style="color:var(--text-3)">${new Date(r.ts*1000).toLocaleTimeString()}</span>`);
+});
+$("heat").addEventListener("mouseleave", hideTip);
+
+/* ── Line panels. Deliberately two charts, not one with two y-axes. ── */
+function drawLine(id, series, color, fmt) {
+  const cv = $(id), { ctx, w, h } = prep(cv);
+  cv._series = series;
+  if (!series || series.length < 2) return;
+  const ys = series.map(p => p[1]);
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (hi === lo) { hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+  const x0 = series[0][0], x1 = series[series.length - 1][0] || x0 + 1;
+  cv._scale = { lo, hi, x0, x1, w, h };
+
+  ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
+  for (let g = 0; g <= 2; g++) {
+    const y = (h - 14) * g / 2 + 1;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+  const X = (t) => ((t - x0) / (x1 - x0 || 1)) * w;
+  const Y = (v) => (h - 14) - ((v - lo) / (hi - lo)) * (h - 16) + 1;
+
+  ctx.strokeStyle = color; ctx.lineWidth = 2;
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+  ctx.beginPath();
+  series.forEach((p, i) => i ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1])));
+  ctx.stroke();
+
+  // direct label on the last value — identity never rests on hue alone
+  const last = series[series.length - 1];
+  ctx.fillStyle = color; ctx.font = "600 11px ui-monospace, monospace";
+  ctx.textAlign = "right";
+  ctx.fillText(fmt(last[1]), w - 4, Math.min(h - 4, Math.max(11, Y(last[1]) - 5)));
+  ctx.fillStyle = css("--text-3"); ctx.font = "10px ui-monospace, monospace";
+  ctx.textAlign = "left";
+  ctx.fillText(fmt(lo), 2, h - 3);
+}
+
+function attachCrosshair(id, fmt, label) {
+  const cv = $(id);
+  cv.addEventListener("mousemove", (ev) => {
+    const s = cv._series, sc = cv._scale;
+    if (!s || !sc) return hideTip();
+    const b = cv.getBoundingClientRect();
+    const t = sc.x0 + ((ev.clientX - b.left) / b.width) * (sc.x1 - sc.x0);
+    let best = s[0], bd = Infinity;
+    for (const p of s) { const d = Math.abs(p[0] - t); if (d < bd) { bd = d; best = p; } }
+    showTip(ev, `<b>${label}</b> ${fmt(best[1])}<br>` +
+                `<span style="color:var(--text-3)">${new Date(best[0]*1000).toLocaleTimeString()}</span>`);
+  });
+  cv.addEventListener("mouseleave", hideTip);
+}
+attachCrosshair("price", fmtPx, "mid");
+attachCrosshair("cvd", (v) => "$" + fmtUsd(v), "CVD");
+
+/* ── Liquidation ladder ─────────────────────────────────────────── */
+function drawLiq(s) {
+  const cv = $("liq"), { ctx, w, h } = prep(cv);
+  const cl = s.liq_clusters || [];
+  cv._cl = cl;
+  if (!cl.length) {
+    ctx.fillStyle = css("--text-3"); ctx.font = "11px ui-sans-serif, system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText("no liquidations in window", w / 2, h / 2);
+    return;
+  }
+  const peak = Math.max(...cl.map(c => c.total_usd)) || 1;
+  const lo = Math.min(...cl.map(c => c.price)), hi = Math.max(...cl.map(c => c.price));
+  const span = (hi - lo) || 1;
+  cv._sc = { lo, hi, h };
+  const barH = Math.max(3, Math.min(16, h / Math.max(cl.length, 1) - 2));
+  const buy = css("--buy"), sell = css("--sell");
+
+  for (const c of cl) {
+    const y = h - ((c.price - lo) / span) * (h - barH) - barH;
+    let x = 0;
+    // longs first (forced selling), then shorts — 2px surface gap between
+    for (const [usd, col] of [[c.long_usd, sell], [c.short_usd, buy]]) {
+      if (usd <= 0) continue;
+      const bw = (usd / peak) * (w - 54);
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.roundRect(x, y, Math.max(2, bw), barH, [0, 3, 3, 0]);
+      ctx.fill();
+      x += bw + 2;
+    }
+    ctx.fillStyle = css("--text-3"); ctx.font = "10px ui-monospace, monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(fmtPx(c.price), w - 2, y + barH - 1);
+  }
+
+  const mid = s.mid;
+  if (mid != null && mid >= lo && mid <= hi) {
+    const y = h - ((mid - lo) / span) * (h - barH) - barH / 2;
+    ctx.strokeStyle = css("--text-2"); ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w - 54, y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+$("liq").addEventListener("mousemove", (ev) => {
+  const cv = $("liq"), cl = cv._cl, sc = cv._sc;
+  if (!cl || !cl.length || !sc) return hideTip();
+  const b = cv.getBoundingClientRect();
+  const price = sc.lo + (1 - (ev.clientY - b.top) / b.height) * (sc.hi - sc.lo);
+  let best = cl[0], bd = Infinity;
+  for (const c of cl) { const d = Math.abs(c.price - price); if (d < bd) { bd = d; best = c; } }
+  showTip(ev, `<b>${fmtPx(best.price)}</b><br>` +
+    `<span style="color:var(--sell)">longs</span> $${fmtUsd(best.long_usd)}<br>` +
+    `<span style="color:var(--buy)">shorts</span> $${fmtUsd(best.short_usd)}`);
+});
+$("liq").addEventListener("mouseleave", hideTip);
+
+/* ── Tiles ──────────────────────────────────────────────────────── */
+function drawTiles(s) {
+  const imb = s.imbalance || {};
+  const bands = Object.keys(imb);
+  const div = s.cvd_divergence;
+  const tiles = [
+    ["Mid", fmtPx(s.mid), s.spread_bps != null ? s.spread_bps.toFixed(2) + " bps spread" : "—", null],
+    ...bands.map(b => {
+      const v = imb[b];
+      return ["Imbalance " + b, v == null ? "—" : fmtSigned(v),
+              v == null ? "no depth" : v > 0 ? "bid heavy" : "ask heavy",
+              v == null ? null : v > 0 ? "--buy" : "--sell"];
+    }),
+    ["CVD window", "$" + fmtUsd(s.cvd_window), "taker flow",
+      s.cvd_window == null ? null : s.cvd_window > 0 ? "--buy" : "--sell"],
+    ["Divergence", div ? div : "none", div ? "price vs flow" : "flow confirming",
+      div === "bearish" ? "--sell" : div === "bullish" ? "--buy" : null],
+    ["Funding", s.funding == null ? "—" : (s.funding * 100).toFixed(4) + "%", "current rate",
+      s.funding == null ? null : s.funding > 0 ? "--sell" : "--buy"],
+    ["Open interest", s.open_interest == null ? "—" : fmtUsd(s.open_interest),
+      s.oi_delta == null ? "—" : fmtSigned(s.oi_delta * 100, 3) + "% change", null],
+    ["Liq burst 10s", "$" + fmtUsd((s.liq_burst || {}).total_usd),
+      `L ${fmtUsd((s.liq_burst||{}).long_usd)} · S ${fmtUsd((s.liq_burst||{}).short_usd)}`, null],
+  ];
+  $("tiles").innerHTML = tiles.map(([k, v, sub, col]) =>
+    `<div class="tile"><div class="k">${k}</div>` +
+    `<div class="v"${col ? ` style="color:var(${col})"` : ""}>${v}</div>` +
+    `<div class="s">${sub}</div></div>`).join("");
+}
+
+function drawPrints(s) {
+  const rows = (s.large_trades || []).slice().reverse();
+  $("prints").querySelector("tbody").innerHTML = rows.length ? rows.map(t =>
+    `<tr><td>${new Date(t.ts*1000).toLocaleTimeString()}</td>` +
+    `<td class="${t.side === "buy" ? "buy" : "sell"}">${t.side}</td>` +
+    `<td>${fmtPx(t.price)}</td><td>$${fmtUsd(t.usd)}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="muted">none yet</td></tr>`;
+}
+
+function render() {
+  const s = SNAP[active];
+  if (!s) return;
+  drawTiles(s); drawHeat(s); drawLiq(s); drawPrints(s);
+  drawLine("price", s.price_series, css("--buy"), fmtPx);
+  drawLine("cvd", s.cvd_series, css("--cvd"), (v) => "$" + fmtUsd(v));
+
+  const bookOk = s.ready;
+  $("dot-book").className = "dot " + (bookOk ? "live" : "down");
+  $("health").textContent =
+    `${health.exchange || ""} · book ${bookOk ? "in sync" : "resyncing"} · ` +
+    `${s.resyncs} resync${s.resyncs === 1 ? "" : "s"}`;
+}
+
+function buildTabs() {
+  $("tabs").innerHTML = SYMBOLS.map(s =>
+    `<button class="tab" role="tab" aria-selected="${s === active}" data-s="${s}">${s}</button>`).join("");
+  $("tabs").querySelectorAll(".tab").forEach(b =>
+    b.onclick = () => { active = b.dataset.s; buildTabs(); render(); });
+}
+
+let ws;
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onopen = () => { $("dot-ws").className = "dot live"; };
+  ws.onclose = () => {
+    $("dot-ws").className = "dot down";
+    $("health").textContent = "service disconnected — retrying";
+    setTimeout(connect, 2000);
+  };
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    SNAP = msg.symbols || {};
+    health = msg.health || {};
+    const syms = Object.keys(SNAP);
+    if (syms.join() !== SYMBOLS.join()) {
+      SYMBOLS = syms;
+      if (!active || !SNAP[active]) active = SYMBOLS[0];
+      buildTabs();
+    }
+    render();
+  };
+}
+connect();
+addEventListener("resize", () => render());
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => render());
+</script>

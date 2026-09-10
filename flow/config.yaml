@@ -1,0 +1,45 @@
+# MSL Flow — configuration
+#
+# Everything here is safe to edit by hand. Restart the service after
+# changing it. Nothing in this file is secret except the Telegram
+# token, so keep it out of any public repository.
+
+exchange: bybit            # bybit (default) or binance
+
+symbols:                   # Binance USD-M perpetual symbols
+  - BTCUSDT
+  - ETHUSDT
+
+book:
+  depth_limit: 500         # bybit serves 1, 50, 200 or 500 for linear
+  bands_bps: [5, 10, 25]   # imbalance measured inside these distances from mid
+  heatmap_bucket_bps: 2.5  # price bucket width for the depth heatmap
+  heatmap_range_bps: 150   # how far either side of mid the heatmap spans
+  heatmap_history: 240     # columns retained (at 1 col/sec = 4 minutes)
+
+flow:
+  cvd_window_s: 900        # rolling window for cumulative volume delta
+  large_trade_usd: 100000  # a single print at or above this is tracked
+
+liquidations:
+  cluster_bucket_bps: 10   # price bucket for grouping liquidations
+  cluster_window_s: 300    # how long a liquidation stays in the cluster map
+  burst_usd: 500000        # total liquidated inside 10s to call it a burst
+
+alerts:
+  enabled: true
+  telegram_token: ""       # from @BotFather
+  telegram_chat_id: ""     # from @userinfobot
+  cooldown_s: 120          # minimum gap between repeats of the same alert
+  rules:
+    book_flip: 0.35        # 25bps imbalance crossing +/- this fires
+    cvd_divergence: true   # price makes an extreme, CVD does not
+    liq_burst: true
+
+server:
+  host: 127.0.0.1
+  port: 8787
+
+storage:
+  path: msl_flow.db
+  persist: true            # write history to SQLite for later analysis
