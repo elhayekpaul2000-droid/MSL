@@ -438,7 +438,7 @@ createZoneBox(
              fillTransparency
          ),
          text = zoneText,
-         text_color = directionalColor,
+         text_color = color.white,
          text_size = zoneTextSize,
          text_halign = text.align_center,
          text_valign = text.align_center,
