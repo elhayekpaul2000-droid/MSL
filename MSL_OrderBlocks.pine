@@ -1,0 +1,1587 @@
+//@version=6
+indicator(
+    "MSL- Continuation/Reversal OrderBlocks",
+    overlay = true,
+    max_boxes_count = 500,
+    max_labels_count = 500
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Constants
+//──────────────────────────────────────────────────────────────────────
+
+const int MAX_ZONES_PER_SIDE         = 250
+const int MAX_PENDING_ZONES_PER_SIDE = 1000
+
+const string GROUP_TYPES    = "Order block types"
+const string GROUP_DURATION = "Zone duration"
+const string GROUP_FILL     = "Zone fill"
+const string GROUP_BORDER   = "Zone borders"
+const string GROUP_TEXT     = "Zone text"
+const string GROUP_MARKERS   = "Zone exit markers"
+const string GROUP_ALERTS    = "Universal alerts"
+const string GROUP_WATERMARK = "Watermark"
+
+//──────────────────────────────────────────────────────────────────────
+// Order-block types
+//──────────────────────────────────────────────────────────────────────
+
+bool showReversalZones = input.bool(
+     true,
+     "Enable reversal order blocks",
+     group = GROUP_TYPES
+)
+
+bool enableRelaxedReversalMode = input.bool(
+     true,
+     "Enable relaxed reversal mode",
+     tooltip = "ON: reversal c1 may qualify by closing beyond c0's body open. OFF: reversal c1 must close beyond c0's wick. Continuation order blocks always remain strict.",
+     group = GROUP_TYPES
+)
+
+bool showContinuationZones = input.bool(
+     true,
+     "Enable continuation order blocks",
+     group = GROUP_TYPES
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Zone duration
+//──────────────────────────────────────────────────────────────────────
+
+// Number of nominal chart-timeframe intervals used for visual projection.
+// Because boxes use xloc.bar_time, this is elapsed timestamp projection,
+// not a lookup of actual future tradable bars.
+int visualExtensionBars = input.int(
+     21,
+     "Future visual extension",
+     minval = 1,
+     maxval = 500,
+     group = GROUP_DURATION
+)
+
+// One lifetime setting applies equally on every chart timeframe.
+int zoneLifeBars = input.int(
+     64,
+     "Zone lifetime (bars)",
+     minval = 1,
+     maxval = 5000,
+     tooltip = "Number of bars an active zone remains valid after confirmation, unless invalidated earlier.",
+     group = GROUP_DURATION
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Zone fill
+//──────────────────────────────────────────────────────────────────────
+
+color bullFillColor = input.color(
+     color.lime,
+     "Bullish fill",
+     group = GROUP_FILL
+)
+
+color bearFillColor = input.color(
+     color.red,
+     "Bearish fill",
+     group = GROUP_FILL
+)
+
+int fillTransparency = input.int(
+     85,
+     "Fill transparency",
+     minval = 0,
+     maxval = 100,
+     group = GROUP_FILL
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Zone borders
+//──────────────────────────────────────────────────────────────────────
+
+bool showBorders = input.bool(
+     true,
+     "Show borders",
+     group = GROUP_BORDER
+)
+
+color bullBorderColor = input.color(
+     color.lime,
+     "Bullish border",
+     group = GROUP_BORDER
+)
+
+color bearBorderColor = input.color(
+     color.red,
+     "Bearish border",
+     group = GROUP_BORDER
+)
+
+int borderWidth = input.int(
+     1,
+     "Border width",
+     minval = 1,
+     maxval = 5,
+     group = GROUP_BORDER
+)
+
+string borderStyleInput = input.string(
+     "Solid",
+     "Border style",
+     options = [
+         "Solid",
+         "Dashed",
+         "Dotted"
+     ],
+     group = GROUP_BORDER
+)
+
+zoneBorderStyle = switch borderStyleInput
+    "Dashed" => line.style_dashed
+    "Dotted" => line.style_dotted
+    => line.style_solid
+
+//──────────────────────────────────────────────────────────────────────
+// Zone text
+//──────────────────────────────────────────────────────────────────────
+
+bool showZoneText = input.bool(
+     true,
+     "Show zone text",
+     group = GROUP_TEXT
+)
+
+color bullTextColor = input.color(
+     color.lime,
+     "Bullish text",
+     group = GROUP_TEXT
+)
+
+color bearTextColor = input.color(
+     color.red,
+     "Bearish text",
+     group = GROUP_TEXT
+)
+
+string zoneTextSizeInput = input.string(
+     "Small",
+     "Text size",
+     options = [
+         "Tiny",
+         "Small",
+         "Normal",
+         "Large",
+         "Huge"
+     ],
+     group = GROUP_TEXT
+)
+
+zoneTextSize = switch zoneTextSizeInput
+    "Tiny"   => size.tiny
+    "Normal" => size.normal
+    "Large"  => size.large
+    "Huge"   => size.huge
+    => size.small
+
+string fontInput = input.string(
+     "Default",
+     "Font",
+     options = [
+         "Default",
+         "Monospace"
+     ],
+     group = GROUP_TEXT
+)
+
+zoneFont = switch fontInput
+    "Monospace" => font.family_monospace
+    => font.family_default
+
+//──────────────────────────────────────────────────────────────────────
+// Zone exit markers
+//──────────────────────────────────────────────────────────────────────
+
+// Markers use label objects rather than plotshape(). This is intentional:
+// plotshape() requires const values for its style and size parameters, so
+// TradingView does not allow input-driven shape/size selection there.
+// label.new() accepts dynamic style, size, color, text and positioning.
+
+bool showBullExitMarkers = input.bool(
+     true,
+     "Show bullish exit markers",
+     group = GROUP_MARKERS
+)
+
+bool showBearExitMarkers = input.bool(
+     true,
+     "Show bearish exit markers",
+     group = GROUP_MARKERS
+)
+
+color bullExitMarkerColor = input.color(
+     color.lime,
+     "Bullish marker color",
+     group = GROUP_MARKERS
+)
+
+color bearExitMarkerColor = input.color(
+     color.red,
+     "Bearish marker color",
+     group = GROUP_MARKERS
+)
+
+int bullExitMarkerTransparency = input.int(
+     0,
+     "Bullish marker transparency",
+     minval = 0,
+     maxval = 100,
+     group = GROUP_MARKERS
+)
+
+int bearExitMarkerTransparency = input.int(
+     0,
+     "Bearish marker transparency",
+     minval = 0,
+     maxval = 100,
+     group = GROUP_MARKERS
+)
+
+string bullExitMarkerShapeInput = input.string(
+     "Triangle Up",
+     "Bullish marker shape",
+     options = [
+         "Triangle Up",
+         "Triangle Down",
+         "Arrow Up",
+         "Arrow Down",
+         "Circle",
+         "Diamond",
+         "Square",
+         "Cross",
+         "X Cross",
+         "Flag",
+         "Label Up",
+         "Label Down"
+     ],
+     group = GROUP_MARKERS
+)
+
+string bearExitMarkerShapeInput = input.string(
+     "Triangle Down",
+     "Bearish marker shape",
+     options = [
+         "Triangle Up",
+         "Triangle Down",
+         "Arrow Up",
+         "Arrow Down",
+         "Circle",
+         "Diamond",
+         "Square",
+         "Cross",
+         "X Cross",
+         "Flag",
+         "Label Up",
+         "Label Down"
+     ],
+     group = GROUP_MARKERS
+)
+
+string bullExitMarkerStyle = switch bullExitMarkerShapeInput
+    "Triangle Down" => label.style_triangledown
+    "Arrow Up"      => label.style_arrowup
+    "Arrow Down"    => label.style_arrowdown
+    "Circle"        => label.style_circle
+    "Diamond"       => label.style_diamond
+    "Square"        => label.style_square
+    "Cross"         => label.style_cross
+    "X Cross"       => label.style_xcross
+    "Flag"          => label.style_flag
+    "Label Up"      => label.style_label_up
+    "Label Down"    => label.style_label_down
+    => label.style_triangleup
+
+string bearExitMarkerStyle = switch bearExitMarkerShapeInput
+    "Triangle Up" => label.style_triangleup
+    "Arrow Up"    => label.style_arrowup
+    "Arrow Down"  => label.style_arrowdown
+    "Circle"      => label.style_circle
+    "Diamond"     => label.style_diamond
+    "Square"      => label.style_square
+    "Cross"       => label.style_cross
+    "X Cross"     => label.style_xcross
+    "Flag"        => label.style_flag
+    "Label Up"    => label.style_label_up
+    "Label Down"  => label.style_label_down
+    => label.style_triangledown
+
+// Labels accept an integer size, allowing finer control than the fixed
+// plotshape size constants. Around 7/10/12/18/24 approximates
+// Tiny/Small/Normal/Large/Huge.
+int bullExitMarkerSize = input.int(
+     10,
+     "Bullish marker size",
+     minval = 1,
+     maxval = 50,
+     group = GROUP_MARKERS
+)
+
+int bearExitMarkerSize = input.int(
+     10,
+     "Bearish marker size",
+     minval = 1,
+     maxval = 50,
+     group = GROUP_MARKERS
+)
+
+string bullExitMarkerLocationInput = input.string(
+     "Below bar",
+     "Bullish marker location",
+     options = [
+         "Above bar",
+         "Below bar",
+         "At candle high",
+         "At candle low",
+         "At candle close"
+     ],
+     group = GROUP_MARKERS
+)
+
+string bearExitMarkerLocationInput = input.string(
+     "Above bar",
+     "Bearish marker location",
+     options = [
+         "Above bar",
+         "Below bar",
+         "At candle high",
+         "At candle low",
+         "At candle close"
+     ],
+     group = GROUP_MARKERS
+)
+
+int bullExitMarkerOffset = input.int(
+     0,
+     "Bullish marker horizontal offset",
+     minval = -50,
+     maxval = 50,
+     tooltip = "Moves the marker left or right by this many chart bars. Zero keeps it on the qualifying candle.",
+     group = GROUP_MARKERS
+)
+
+int bearExitMarkerOffset = input.int(
+     0,
+     "Bearish marker horizontal offset",
+     minval = -50,
+     maxval = 50,
+     tooltip = "Moves the marker left or right by this many chart bars. Zero keeps it on the qualifying candle.",
+     group = GROUP_MARKERS
+)
+
+int bullExitMarkerVerticalTicks = input.int(
+     0,
+     "Bullish marker vertical offset (ticks)",
+     minval = -1000,
+     maxval = 1000,
+     tooltip = "Applied when location is At candle high, At candle low, or At candle close.",
+     group = GROUP_MARKERS
+)
+
+int bearExitMarkerVerticalTicks = input.int(
+     0,
+     "Bearish marker vertical offset (ticks)",
+     minval = -1000,
+     maxval = 1000,
+     tooltip = "Applied when location is At candle high, At candle low, or At candle close.",
+     group = GROUP_MARKERS
+)
+
+bool showBullExitMarkerText = input.bool(
+     false,
+     "Show bullish marker text",
+     group = GROUP_MARKERS
+)
+
+bool showBearExitMarkerText = input.bool(
+     false,
+     "Show bearish marker text",
+     group = GROUP_MARKERS
+)
+
+string bullExitMarkerText = input.string(
+     "B",
+     "Bullish marker text",
+     group = GROUP_MARKERS
+)
+
+string bearExitMarkerText = input.string(
+     "S",
+     "Bearish marker text",
+     group = GROUP_MARKERS
+)
+
+color bullExitMarkerTextColor = input.color(
+     color.white,
+     "Bullish marker text color",
+     group = GROUP_MARKERS
+)
+
+color bearExitMarkerTextColor = input.color(
+     color.white,
+     "Bearish marker text color",
+     group = GROUP_MARKERS
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Universal alerts
+//──────────────────────────────────────────────────────────────────────
+
+// One TradingView alert instance can cover every confirmed bullish and
+// bearish valid-side exit. Alert generation is intentionally independent
+// of marker visibility/cosmetics: hiding a marker does not disable alerts.
+bool enableUniversalExitAlerts = input.bool(
+     true,
+     "Enable universal exit alerts",
+     tooltip = "Fires once at bar close whenever an active zone produces the same valid-side exit event used for the marker. Bullish and bearish exits on the same candle are combined into one notification.",
+     group = GROUP_ALERTS
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Fixed watermark
+//──────────────────────────────────────────────────────────────────────
+
+// The watermark is always visible. There is deliberately no enable/disable input.
+// Normal is the minimum permitted size; users can only make it larger.
+color watermarkColorInput = input.color(
+     color.silver,
+     "Watermark color",
+     group = GROUP_WATERMARK
+)
+
+string watermarkFontInput = input.string(
+     "Default",
+     "Watermark font",
+     options = [
+         "Default",
+         "Monospace"
+     ],
+     group = GROUP_WATERMARK
+)
+
+string watermarkSizeInput = input.string(
+     "Normal",
+     "Watermark size",
+     options = [
+         "Normal",
+         "Large",
+         "Huge"
+     ],
+     tooltip = "Normal is the minimum size. The watermark can only be made more prominent, not smaller.",
+     group = GROUP_WATERMARK
+)
+
+watermarkFont = switch watermarkFontInput
+    "Monospace" => font.family_monospace
+    => font.family_default
+
+watermarkTextSize = switch watermarkSizeInput
+    "Large" => size.large
+    "Huge"  => size.huge
+    => size.normal
+
+// Force a consistent subtle transparency even if the selected input color
+// contains its own alpha value, keeping the default visible but restrained.
+color watermarkDisplayColor = color.new(
+     watermarkColorInput,
+     45
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Data structures
+//──────────────────────────────────────────────────────────────────────
+
+type PendingZone
+    int c0Time
+
+    float top
+    float bottom
+
+    // Permanently fixed at c1's original wick.
+    float c1Target
+
+    bool continuation
+
+    // True only for a relaxed bearish reversal where c1 closes through c0's
+    // body but does not close below c0's wick low.
+    bool refinedReversal
+
+// One visual marker can be shared by several overlapping zones when they all
+// produce the same directional exit on the same confirmed candle. parentCount
+// keeps that marker visible until the last surviving parent zone disappears.
+type ExitMarker
+    label drawing
+    int parentCount
+
+type ActiveZone
+    box drawing
+
+    // Number of completed bars elapsed since confirmation.
+    int ageBars
+
+    float top
+    float bottom
+    string baseText
+    bool lost51
+
+    // Armed after any confirmed close finishes inside this zone.
+    // Reset after the first later valid-side close outside the zone.
+    bool insideCloseSeen
+
+    // Marker references owned by this zone. A marker is deleted only after
+    // every parent zone that produced it is no longer active/visible.
+    array<ExitMarker> exitMarkers
+
+//──────────────────────────────────────────────────────────────────────
+// Collections
+//──────────────────────────────────────────────────────────────────────
+
+var array<PendingZone> bullPending =
+     array.new<PendingZone>()
+
+var array<PendingZone> bearPending =
+     array.new<PendingZone>()
+
+var array<ActiveZone> bullActive =
+     array.new<ActiveZone>()
+
+var array<ActiveZone> bearActive =
+     array.new<ActiveZone>()
+
+// Total exit-marker labels currently tracked by our own bookkeeping. Kept in
+// sync with every marker create/release so we never let our own reference
+// count exceed the indicator's max_labels_count budget (see fix #3 below).
+var int trackedExitMarkerCount = 0
+
+//──────────────────────────────────────────────────────────────────────
+// Time-based projection helper
+//──────────────────────────────────────────────────────────────────────
+
+getProjectedRightTime() =>
+    time + int(
+         timeframe.in_seconds() *
+         1000.0 *
+         visualExtensionBars
+     )
+
+//──────────────────────────────────────────────────────────────────────
+// Zone text and box creation
+//──────────────────────────────────────────────────────────────────────
+
+getZoneText(
+     bool bullish,
+     bool continuation,
+     bool refinedReversal
+ ) =>
+    string zoneText = ""
+
+    if showZoneText
+        if bullish and continuation
+            zoneText := "Bullish Continuation OB"
+        else if bullish
+            zoneText := "Bullish Reversal OB"
+        else if continuation
+            zoneText := "Bearish Continuation OB"
+        else if refinedReversal
+            zoneText := "Refined Bearish Reversal Order Block"
+        else
+            zoneText := "Bearish Reversal OB"
+
+    zoneText
+
+createZoneBox(
+     bool bullish,
+     int leftTime,
+     int rightTime,
+     float topPrice,
+     float bottomPrice,
+     string zoneText
+ ) =>
+    color fillColor =
+         bullish
+         ? bullFillColor
+         : bearFillColor
+
+    color borderColor =
+         bullish
+         ? bullBorderColor
+         : bearBorderColor
+
+    color textColor =
+         bullish
+         ? bullTextColor
+         : bearTextColor
+
+    box.new(
+         left = leftTime,
+         top = topPrice,
+         right = rightTime,
+         bottom = bottomPrice,
+         xloc = xloc.bar_time,
+         border_color = showBorders ? borderColor : na,
+         border_width = borderWidth,
+         border_style = zoneBorderStyle,
+         bgcolor = color.new(
+             fillColor,
+             fillTransparency
+         ),
+         text = zoneText,
+         text_color = textColor,
+         text_size = zoneTextSize,
+         text_halign = text.align_center,
+         text_valign = text.align_center,
+         text_wrap = text.wrap_auto,
+         text_font_family = zoneFont,
+         text_formatting = text.format_italic
+     )
+
+//──────────────────────────────────────────────────────────────────────
+// Mark an active zone after price closes beyond its 51% level
+//──────────────────────────────────────────────────────────────────────
+
+// FIX #1: honor the "Show zone text" toggle. Previously this always wrote
+// "Lost 51% LQ" onto the box even when showZoneText was disabled, ignoring
+// the user's choice to hide zone text.
+markZoneLost51(
+     box drawing,
+     string baseText
+ ) =>
+    if showZoneText
+        string lossText =
+             "Lost 51%\n      LQ"
+
+        string combinedText = lossText
+
+        if baseText != ""
+            combinedText := baseText + "\n\n" + lossText
+
+        box.set_text(
+             drawing,
+             combinedText
+         )
+
+        box.set_text_halign(
+             drawing,
+             text.align_right
+         )
+
+        box.set_text_valign(
+             drawing,
+             text.align_center
+         )
+
+        box.set_text_wrap(
+             drawing,
+             text.wrap_none
+         )
+
+        // Monospace is required so LQ begins directly under the digit 1.
+        box.set_text_font_family(
+             drawing,
+             font.family_monospace
+         )
+
+//──────────────────────────────────────────────────────────────────────
+// Collection helpers
+//──────────────────────────────────────────────────────────────────────
+
+// Pending formations intentionally have no age-based expiry. This cap only
+// prevents an unbounded queue; when full, the oldest pending formation is
+// discarded before the newest one is stored.
+pushPendingZone(
+     array<PendingZone> zones,
+     PendingZone newZone
+ ) =>
+    if array.size(zones) >= MAX_PENDING_ZONES_PER_SIDE
+        array.shift(zones)
+
+    array.push(
+         zones,
+         newZone
+     )
+
+    array.size(zones)
+
+// Release every marker owned by a zone. Shared markers use reference counting,
+// so a marker is deleted only when this was its final surviving parent zone.
+releaseZoneMarkers(
+     ActiveZone zone
+ ) =>
+    int markerIndex = array.size(zone.exitMarkers) - 1
+
+    while markerIndex >= 0
+        ExitMarker ownedMarker = array.get(
+             zone.exitMarkers,
+             markerIndex
+         )
+
+        ownedMarker.parentCount -= 1
+
+        if ownedMarker.parentCount <= 0
+            label.delete(ownedMarker.drawing)
+            // FIX #3: keep our own live-label count in sync so it never
+            // silently drifts past max_labels_count (see createExitMarker).
+            trackedExitMarkerCount -= 1
+
+        array.remove(
+             zone.exitMarkers,
+             markerIndex
+         )
+
+        markerIndex -= 1
+
+    array.size(zone.exitMarkers)
+
+makeRoomForActiveZone(
+     array<ActiveZone> zones
+ ) =>
+    if array.size(zones) >= MAX_ZONES_PER_SIDE
+        ActiveZone oldestZone = array.shift(zones)
+
+        // Parent-bound markers must disappear with their final visible zone.
+        releaseZoneMarkers(oldestZone)
+        box.delete(oldestZone.drawing)
+
+    array.size(zones)
+
+//──────────────────────────────────────────────────────────────────────
+// Exit-marker creation
+//──────────────────────────────────────────────────────────────────────
+
+// FIX #3: previously nothing tracked how many exit-marker labels were alive
+// at once. With very long zone lifetimes and an active symbol, live markers
+// could exceed max_labels_count=500 and TradingView would silently delete
+// the oldest ones out from under still-active zones, leaving their
+// parentCount bookkeeping stale. We now cap creation so our own tracked
+// label count never exceeds the indicator's label budget.
+const int MAX_TRACKED_EXIT_MARKERS = 500
+
+createExitMarker(
+     bool bullish
+ ) =>
+    label newMarkerLabel = na
+
+    if trackedExitMarkerCount < MAX_TRACKED_EXIT_MARKERS
+        string locationInput =
+             bullish
+             ? bullExitMarkerLocationInput
+             : bearExitMarkerLocationInput
+
+        string markerYLoc = switch locationInput
+            "Above bar" => yloc.abovebar
+            "Below bar" => yloc.belowbar
+            => yloc.price
+
+        float basePrice = switch locationInput
+            "At candle high"  => high
+            "At candle low"   => low
+            "At candle close" => close
+            => na
+
+        int verticalTicks =
+             bullish
+             ? bullExitMarkerVerticalTicks
+             : bearExitMarkerVerticalTicks
+
+        float markerPrice =
+             na(basePrice)
+             ? na
+             : basePrice + syminfo.mintick * verticalTicks
+
+        int horizontalOffset =
+             bullish
+             ? bullExitMarkerOffset
+             : bearExitMarkerOffset
+
+        // Avoid a negative bar-index coordinate near the beginning of a dataset.
+        int markerBarIndex = math.max(
+             bar_index + horizontalOffset,
+             0
+         )
+
+        color markerColor =
+             bullish
+             ? color.new(
+                   bullExitMarkerColor,
+                   bullExitMarkerTransparency
+               )
+             : color.new(
+                   bearExitMarkerColor,
+                   bearExitMarkerTransparency
+               )
+
+        string markerStyle =
+             bullish
+             ? bullExitMarkerStyle
+             : bearExitMarkerStyle
+
+        int markerSize =
+             bullish
+             ? bullExitMarkerSize
+             : bearExitMarkerSize
+
+        bool showMarkerText =
+             bullish
+             ? showBullExitMarkerText
+             : showBearExitMarkerText
+
+        string markerText =
+             showMarkerText
+             ? (bullish ? bullExitMarkerText : bearExitMarkerText)
+             : ""
+
+        color markerTextColor =
+             bullish
+             ? bullExitMarkerTextColor
+             : bearExitMarkerTextColor
+
+        newMarkerLabel := label.new(
+             x = markerBarIndex,
+             y = markerPrice,
+             text = markerText,
+             xloc = xloc.bar_index,
+             yloc = markerYLoc,
+             color = markerColor,
+             style = markerStyle,
+             textcolor = markerTextColor,
+             size = markerSize
+         )
+
+        trackedExitMarkerCount += 1
+
+    newMarkerLabel
+
+//──────────────────────────────────────────────────────────────────────
+// Active-zone processing
+//──────────────────────────────────────────────────────────────────────
+
+processActiveZones(
+     array<ActiveZone> zones,
+     bool bullish,
+     int projectedRightTime
+ ) =>
+    int activeIndex = array.size(zones) - 1
+    bool validExitSignal = false
+
+    // Collect the exact zones that produced this candle's directional exit.
+    // If several overlap, they will share one visual marker, matching the
+    // previous one-marker-per-direction-per-candle behavior.
+    array<ActiveZone> markerParents = array.new<ActiveZone>()
+
+    while activeIndex >= 0
+        ActiveZone zone = array.get(
+             zones,
+             activeIndex
+         )
+
+        // Age advances only on confirmed bars because this function is
+        // called only from the barstate.isconfirmed processing block.
+        zone.ageBars += 1
+
+        box.set_right(
+             zone.drawing,
+             projectedRightTime
+         )
+
+        bool expired =
+             zone.ageBars > zoneLifeBars
+
+        bool hardInvalidated =
+             bullish
+             ? close < zone.bottom
+             : close > zone.top
+
+        if expired or hardInvalidated
+            // Delete all markers whose final surviving parent is this zone.
+            releaseZoneMarkers(zone)
+            box.delete(zone.drawing)
+            array.remove(
+                 zones,
+                 activeIndex
+             )
+
+        else
+            // A confirmed close on either boundary counts as being inside.
+            bool closeInsideZone =
+                 close >= zone.bottom and
+                 close <= zone.top
+
+            // Once armed by an inside close, the first later close back
+            // outside through the non-invalidating side produces a marker.
+            // Bullish valid exit: close > top.
+            // Bearish valid exit: close < bottom.
+            bool validSideExit =
+                 zone.insideCloseSeen and
+                 (
+                     bullish
+                     ? close > zone.top
+                     : close < zone.bottom
+                 )
+
+            if closeInsideZone
+                zone.insideCloseSeen := true
+            else if validSideExit
+                validExitSignal := true
+                zone.insideCloseSeen := false
+                array.push(
+                     markerParents,
+                     zone
+                 )
+
+            if not zone.lost51
+                // Do not keep recalculating the 51% threshold once this zone
+                // has already been permanently marked as Lost 51%.
+                float zoneHeight =
+                     zone.top - zone.bottom
+
+                float zone51Level =
+                     bullish
+                     ? zone.top - zoneHeight * 0.51
+                     : zone.bottom + zoneHeight * 0.51
+
+                bool lost51Now =
+                     bullish
+                     ? close < zone51Level
+                     : close > zone51Level
+
+                if lost51Now
+                    zone.lost51 := true
+                    markZoneLost51(
+                         zone.drawing,
+                         zone.baseText
+                     )
+
+        activeIndex -= 1
+
+    int parentCount = array.size(markerParents)
+
+    bool showDirectionalMarkers =
+         bullish
+         ? showBullExitMarkers
+         : showBearExitMarkers
+
+    if showDirectionalMarkers and parentCount > 0
+        // Create exactly one visual marker for this direction/candle and share
+        // its reference across every zone that produced the signal.
+        label newMarkerDrawing = createExitMarker(bullish)
+
+        // FIX #3: createExitMarker() can now return na once the tracked-label
+        // budget is exhausted. Only register the marker with its parent zones
+        // when a label was actually created.
+        if not na(newMarkerDrawing)
+            ExitMarker sharedMarker = ExitMarker.new(
+                 newMarkerDrawing,
+                 parentCount
+             )
+
+            int parentIndex = 0
+
+            while parentIndex < parentCount
+                ActiveZone parentZone = array.get(
+                     markerParents,
+                     parentIndex
+                 )
+
+                array.push(
+                     parentZone.exitMarkers,
+                     sharedMarker
+                 )
+
+                parentIndex += 1
+
+    validExitSignal
+
+//──────────────────────────────────────────────────────────────────────
+// Pending-zone confirmation and invalidation processing
+//──────────────────────────────────────────────────────────────────────
+
+processPendingZones(
+     array<PendingZone> pendingZones,
+     array<ActiveZone> activeZones,
+     bool bullish,
+     int projectedRightTime
+ ) =>
+    int pendingIndex = array.size(pendingZones) - 1
+
+    while pendingIndex >= 0
+        PendingZone zone = array.get(
+             pendingZones,
+             pendingIndex
+         )
+
+        bool hardInvalidated =
+             bullish
+             ? close < zone.bottom
+             : close > zone.top
+
+        if hardInvalidated
+            array.remove(
+                 pendingZones,
+                 pendingIndex
+             )
+
+        else
+            // Strict c2 confirmation remains permanently tied to c1's
+            // original wick and must continue in the zone's direction.
+            // Bullish c2: bullish candle closing above c1 wick high.
+            // Bearish c2: bearish candle closing below c1 wick low.
+            bool directionalC2 =
+                 bullish
+                 ? close > open
+                 : close < open
+
+            bool confirmed =
+                 directionalC2 and
+                 (
+                     bullish
+                     ? close > zone.c1Target
+                     : close < zone.c1Target
+                 )
+
+            if confirmed
+                // FIX #2: guard against a degenerate zero-height box. This
+                // can happen on the refined-bearish-reversal path when c0 has
+                // no upper wick (close[1] == high[1]) and c1's high does not
+                // exceed c0's close, making top == bottom. Skip confirming
+                // (and drop the malformed pending zone) rather than drawing
+                // an invisible box.
+                bool degenerateZone =
+                     zone.top <= zone.bottom
+
+                if not degenerateZone
+                    makeRoomForActiveZone(activeZones)
+
+                    // Calculate the base label once and reuse the same value for
+                    // both the drawing and the ActiveZone state object.
+                    string baseText =
+                         getZoneText(
+                              bullish,
+                              zone.continuation,
+                              zone.refinedReversal
+                          )
+
+                    box newZone = createZoneBox(
+                         bullish,
+                         zone.c0Time,
+                         projectedRightTime,
+                         zone.top,
+                         zone.bottom,
+                         baseText
+                     )
+
+                    array.push(
+                         activeZones,
+                         ActiveZone.new(
+                             newZone,
+                             0,
+                             zone.top,
+                             zone.bottom,
+                             baseText,
+                             false,
+                             false,
+                             array.new<ExitMarker>()
+                         )
+                     )
+
+                array.remove(
+                     pendingZones,
+                     pendingIndex
+                 )
+
+        pendingIndex -= 1
+
+    array.size(pendingZones)
+
+//──────────────────────────────────────────────────────────────────────
+// Live intrabar zone visuals
+//──────────────────────────────────────────────────────────────────────
+
+// Refresh only the right edge of already-active boxes while the realtime/replay
+// candle is open. No age, invalidation, 51%, marker, or alert state changes here.
+refreshActiveZoneVisuals(
+     array<ActiveZone> zones,
+     int projectedRightTime
+ ) =>
+    int zoneIndex = array.size(zones) - 1
+
+    while zoneIndex >= 0
+        ActiveZone zone = array.get(
+             zones,
+             zoneIndex
+         )
+
+        box.set_right(
+             zone.drawing,
+             projectedRightTime
+         )
+
+        zoneIndex -= 1
+
+    array.size(zones)
+
+// Draw temporary confirmation previews for pending zones on an unconfirmed bar.
+// These boxes are intentionally NOT stored in ActiveZone state. Pine's realtime
+// rollback removes/recreates them as the open candle changes, so a preview that
+// loses its c2 condition disappears automatically and cannot affect engine state.
+previewPendingZones(
+     array<PendingZone> pendingZones,
+     bool bullish,
+     int projectedRightTime,
+     int maxPreviewBoxes
+ ) =>
+    int createdPreviewBoxes = 0
+    int pendingIndex = array.size(pendingZones) - 1
+
+    while pendingIndex >= 0 and createdPreviewBoxes < maxPreviewBoxes
+        PendingZone zone = array.get(
+             pendingZones,
+             pendingIndex
+         )
+
+        bool hardInvalidatedNow =
+             bullish
+             ? close < zone.bottom
+             : close > zone.top
+
+        bool directionalC2Now =
+             bullish
+             ? close > open
+             : close < open
+
+        bool confirmationPreview =
+             not hardInvalidatedNow and
+             directionalC2Now and
+             (
+                 bullish
+                 ? close > zone.c1Target
+                 : close < zone.c1Target
+             ) and
+             zone.top > zone.bottom
+
+        if confirmationPreview
+            string previewText =
+                 getZoneText(
+                      bullish,
+                      zone.continuation,
+                      zone.refinedReversal
+                  )
+
+            createZoneBox(
+                 bullish,
+                 zone.c0Time,
+                 projectedRightTime,
+                 zone.top,
+                 zone.bottom,
+                 previewText
+             )
+
+            createdPreviewBoxes += 1
+
+        pendingIndex -= 1
+
+    createdPreviewBoxes
+
+// Intrabar execution is visual-only. Permanent state is still processed solely
+// inside the barstate.isconfirmed block below. Preview boxes are limited to the
+// currently unused box capacity so they cannot force TradingView to garbage-
+// collect an active parent zone.
+if not barstate.isconfirmed
+    int liveProjectedRightTime = getProjectedRightTime()
+
+    refreshActiveZoneVisuals(
+         bullActive,
+         liveProjectedRightTime
+     )
+
+    refreshActiveZoneVisuals(
+         bearActive,
+         liveProjectedRightTime
+     )
+
+    int activeBoxCount =
+         array.size(bullActive) +
+         array.size(bearActive)
+
+    int availablePreviewBoxes = math.max(
+         MAX_ZONES_PER_SIDE * 2 - activeBoxCount,
+         0
+     )
+
+    int bullishPreviewCount = previewPendingZones(
+         bullPending,
+         true,
+         liveProjectedRightTime,
+         availablePreviewBoxes
+     )
+
+    int remainingPreviewBoxes = math.max(
+         availablePreviewBoxes - bullishPreviewCount,
+         0
+     )
+
+    previewPendingZones(
+         bearPending,
+         false,
+         liveProjectedRightTime,
+         remainingPreviewBoxes
+     )
+
+//──────────────────────────────────────────────────────────────────────
+// Confirmed-bar processing
+//──────────────────────────────────────────────────────────────────────
+
+// Marker series are reset on every execution and can only become true
+// from confirmed-bar active-zone processing below.
+bool bullValidExitSignal = false
+bool bearValidExitSignal = false
+
+// Permanent zone processing occurs only at confirmed candle close.
+if barstate.isconfirmed
+
+    // Cache the current projection timestamp once for this confirmed bar.
+    int projectedRightTime = getProjectedRightTime()
+
+    // Preserve the original processing order exactly:
+    // bullish active -> bearish active -> bullish pending -> bearish pending.
+    bullValidExitSignal := processActiveZones(
+         bullActive,
+         true,
+         projectedRightTime
+     )
+
+    bearValidExitSignal := processActiveZones(
+         bearActive,
+         false,
+         projectedRightTime
+     )
+
+    processPendingZones(
+         bullPending,
+         bullActive,
+         true,
+         projectedRightTime
+     )
+
+    processPendingZones(
+         bearPending,
+         bearActive,
+         false,
+         projectedRightTime
+     )
+
+    //──────────────────────────────────────────────────────────────────
+    // Detect new formations
+    //
+    // Current candle: c1
+    // Previous candle: c0 (the order-block / weakness candle)
+    // Two candles ago: CX (reference / momentum-context candle)
+    // Three candles ago: candle before CX (continuation reference only)
+    //
+    // Reversal and continuation share the same strict c0 weakness candle.
+    // Continuation always requires a strict c1 wick break plus proven CX
+    // momentum. The relaxed toggle controls the reversal c1 qualification:
+    //   relaxed ON  -> c1 may close beyond c0's body open;
+    //   relaxed OFF -> c1 must close beyond c0's wick.
+    // A relaxed-only bearish reversal that does not close below c0's wick low
+    // is labeled Refined Bearish Reversal Order Block and is plotted from
+    // c0's body close up to the highest c0/c1 wick.
+    //
+    // A valid continuation context always has priority and is never reclassified
+    // as reversal; continuation remains strict regardless of the toggle.
+    //──────────────────────────────────────────────────────────────────
+
+    bool enoughHistoryForClassification =
+         bar_index >= 3
+
+    if enoughHistoryForClassification
+
+        //──────────────────────────────────────────────────────────────
+        // Bullish sequence
+        //
+        // CX: any candle for reversal classification.
+        // c0: bearish weakness/OB candle that fails to close below CX low.
+        // c1: bullish displacement candle.
+        //     Continuation -> must close above c0 wick high.
+        //     Reversal     -> relaxed ON: close above c0 body open;
+        //                     relaxed OFF: close above c0 wick high.
+        // c2: handled by pending confirmation; must later be bullish and
+        //     close above c1 wick high. There is no age-based attempt limit;
+        //     the setup remains pending until confirmation, hard invalidation,
+        //     or pending-cap eviction.
+        //──────────────────────────────────────────────────────────────
+
+        bool bullishC0 =
+             close[1] < open[1] and
+             close[1] >= low[2]
+
+        bool bullishC1Directional =
+             close > open
+
+        bool bullishC1StrictBreak =
+             bullishC1Directional and
+             close > high[1]
+
+        bool bullishC1RelaxedBreak =
+             bullishC1Directional and
+             close > open[1]
+
+        // Strict continuation context:
+        // CX itself must be bullish and close above the wick high of the
+        // candle before CX. Without this proven momentum, an otherwise valid
+        // sequence is eligible for reversal classification instead.
+        bool bullishContinuationContext =
+             close[2] > open[2] and
+             close[2] > high[3]
+
+        bool bullishContinuationSetup =
+             bullishC0 and
+             bullishContinuationContext and
+             bullishC1StrictBreak
+
+        bool bullishReversalC1Break =
+             enableRelaxedReversalMode
+             ? bullishC1RelaxedBreak
+             : bullishC1StrictBreak
+
+        bool bullishReversalSetup =
+             bullishC0 and
+             not bullishContinuationContext and
+             bullishReversalC1Break
+
+        bool bullishSetupEnabled =
+             (bullishContinuationSetup and showContinuationZones) or
+             (bullishReversalSetup and showReversalZones)
+
+        if bullishSetupEnabled
+            bool isContinuation =
+                 bullishContinuationSetup
+
+            pushPendingZone(
+                 bullPending,
+                 PendingZone.new(
+                     // Time anchor of c0.
+                     time[1],
+
+                     // Upper boundary is the lower/shorter of the c0 and c1
+                     // wick highs. Strict setups naturally resolve to c0 high;
+                     // relaxed-only setups can use c1's lower high.
+                     math.min(
+                         high[1],
+                         high
+                     ),
+
+                     // Lower boundary is the lowest c0/c1 wick for protective
+                     // stop-loss geometry.
+                     math.min(
+                         low[1],
+                         low
+                     ),
+
+                     // Permanently freeze c2 target at c1 wick high.
+                     high,
+
+                     isContinuation,
+
+                     // Refined geometry currently applies only to bearish reversals.
+                     false
+                 )
+            )
+
+        //──────────────────────────────────────────────────────────────
+        // Bearish sequence
+        //
+        // CX: any candle for reversal classification.
+        // c0: bullish weakness/OB candle that fails to close above CX high.
+        // c1: bearish displacement candle.
+        //     Continuation -> must close below c0 wick low.
+        //     Reversal     -> relaxed ON: close below c0 body open;
+        //                     relaxed OFF: close below c0 wick low.
+        //     Refined      -> relaxed reversal where c1 does NOT close below
+        //                     c0 wick low; zone bottom = c0 body close.
+        // c2: handled by pending confirmation; must later be bearish and
+        //     close below c1 wick low. There is no age-based attempt limit;
+        //     the setup remains pending until confirmation, hard invalidation,
+        //     or pending-cap eviction.
+        //──────────────────────────────────────────────────────────────
+
+        bool bearishC0 =
+             close[1] > open[1] and
+             close[1] <= high[2]
+
+        bool bearishC1Directional =
+             close < open
+
+        bool bearishC1StrictBreak =
+             bearishC1Directional and
+             close < low[1]
+
+        bool bearishC1RelaxedBreak =
+             bearishC1Directional and
+             close < open[1]
+
+        // Strict continuation context:
+        // CX itself must be bearish and close below the wick low of the
+        // candle before CX. Without this proven momentum, an otherwise valid
+        // sequence is eligible for reversal classification instead.
+        bool bearishContinuationContext =
+             close[2] < open[2] and
+             close[2] < low[3]
+
+        bool bearishContinuationSetup =
+             bearishC0 and
+             bearishContinuationContext and
+             bearishC1StrictBreak
+
+        bool bearishReversalC1Break =
+             enableRelaxedReversalMode
+             ? bearishC1RelaxedBreak
+             : bearishC1StrictBreak
+
+        bool bearishReversalSetup =
+             bearishC0 and
+             not bearishContinuationContext and
+             bearishReversalC1Break
+
+        // Refined bearish reversal:
+        // c1 qualifies through the relaxed body-close rule, but its close does
+        // not break below c0's wick low. This is the exact relaxed-only case.
+        bool bearishRefinedReversalSetup =
+             bearishReversalSetup and
+             not bearishC1StrictBreak
+
+        bool bearishSetupEnabled =
+             (bearishContinuationSetup and showContinuationZones) or
+             (bearishReversalSetup and showReversalZones)
+
+        if bearishSetupEnabled
+            bool isContinuation =
+                 bearishContinuationSetup
+
+            // FIX #2: compute the refined lower boundary (c0 body close) and
+            // the upper boundary (highest c0/c1 wick) up front so a
+            // degenerate (zero-height) refined zone can be detected and
+            // skipped before ever being queued as pending.
+            float bearishTop =
+                 math.max(
+                     high[1],
+                     high
+                 )
+
+            float bearishBottom =
+                 bearishRefinedReversalSetup
+                 ? close[1]
+                 : math.max(
+                     low[1],
+                     low
+                 )
+
+            bool bearishDegenerateZone =
+                 bearishTop <= bearishBottom
+
+            if not bearishDegenerateZone
+                pushPendingZone(
+                     bearPending,
+                     PendingZone.new(
+                         // Time anchor of c0.
+                         time[1],
+
+                         // Upper boundary is the highest c0/c1 wick for protective
+                         // stop-loss geometry.
+                         bearishTop,
+
+                         // Refined bearish reversal geometry:
+                         // when c1 closes through c0's body but does not close below
+                         // c0's wick low, the zone is refined upward so its lower
+                         // boundary begins at c0's body close. All other bearish
+                         // zones retain the existing wick-based lower boundary.
+                         bearishBottom,
+
+                         // Permanently freeze c2 target at c1 wick low.
+                         low,
+
+                         isContinuation,
+
+                         bearishRefinedReversalSetup
+                     )
+                )
+
+//──────────────────────────────────────────────────────────────────────
+// Zone exit marker ownership
+//──────────────────────────────────────────────────────────────────────
+
+// Marker drawings are created inside processActiveZones() so each marker is
+// attached to the exact active zone(s) that produced it. This guarantees that
+// no historical marker can outlive all of its parent zones.
+
+//──────────────────────────────────────────────────────────────────────
+// Universal confirmed-bar exit alert
+//──────────────────────────────────────────────────────────────────────
+
+// The signal booleans are produced only by confirmed-bar active-zone
+// processing. Pending/forming zones therefore cannot arm or trigger this
+// alert. The alert is also independent of marker visibility settings.
+bool anyValidExitSignal =
+     bullValidExitSignal or
+     bearValidExitSignal
+
+if enableUniversalExitAlerts and anyValidExitSignal
+    string exitDirection =
+         bullValidExitSignal and bearValidExitSignal
+         ? "BULLISH + BEARISH"
+         : bullValidExitSignal
+           ? "BULLISH"
+           : "BEARISH"
+
+    string exitAlertMessage =
+         "MSL OB EXIT | " +
+         syminfo.tickerid +
+         " | TF " +
+         timeframe.period +
+         " | " +
+         exitDirection +
+         " | Close " +
+         str.tostring(
+             close,
+             format.mintick
+         )
+
+    alert(
+         exitAlertMessage,
+         alert.freq_once_per_bar_close
+    )
+
+//──────────────────────────────────────────────────────────────────────
+// Fixed chart watermark
+//──────────────────────────────────────────────────────────────────────
+
+// A table is viewport-anchored rather than bar-anchored, so the watermark stays
+// fixed at the bottom center while the user scrolls, zooms, or runs Bar Replay.
+var table mslWatermark = table.new(
+     position.bottom_center,
+     1,
+     1,
+     bgcolor = color.new(color.black, 100),
+     frame_width = 0,
+     border_width = 0
+)
+
+if barstate.islast
+    table.cell(
+         mslWatermark,
+         0,
+         0,
+         "MSL | Systems",
+         text_color = watermarkDisplayColor,
+         text_size = watermarkTextSize,
+         text_halign = text.align_center,
+         text_valign = text.align_center,
+         text_font_family = watermarkFont,
+         bgcolor = color.new(color.black, 100)
+     )
