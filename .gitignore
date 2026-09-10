@@ -1,0 +1,14 @@
+# Delivery bundles — regenerated from tracked source, never committed
+MSL_bundle.zip
+*.zip
+
+# Python runtime artifacts from flow/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Collected market data — local to each machine, grows without bound
+*.db
+*.db-wal
+*.db-shm
