@@ -179,14 +179,14 @@ bool basisFade = input.bool(true, "Fade at extremes", group = G_POS, inline = "c
 
 bool useCot = input.bool(true, "COT net positioning", group = G_POS, inline = "c9")
 int  wCot   = input.int(20, "w", minval = 0, maxval = 100, group = G_POS, inline = "c9")
-string cotLongSym = input.symbol(
+string cotLongSym = input.string(
      "",
      "Long series",
      group = G_POS,
      inline = "ca",
      tooltip = "Paste the two COT series for your instrument from TradingView symbol search (type COT + your market). Leave blank and this component stays dropped."
 )
-string cotShortSym = input.symbol("", "Short series", group = G_POS, inline = "ca")
+string cotShortSym = input.string("", "Short series", group = G_POS, inline = "ca")
 string cotGroup = input.string(
      "Commercials — follow",
      "Group",
@@ -254,12 +254,16 @@ bool alertFlips = input.bool(true, "Fire alert() on bias flips", group = G_ALERT
 //──────────────────────────────────────────────────────────────────────
 
 f_clamp(float v, float lo, float hi) =>
-    math.max(lo, math.min(hi, v))
+    na(v) ? na : math.max(lo, math.min(hi, v))
 
+// Returns na — not 0 — until the window is genuinely populated. A
+// zero here would read as a confident neutral and pull the score
+// toward the middle at full weight, which is the exact dilution the
+// layer model exists to prevent.
 f_z(float src, int len) =>
     float m  = ta.sma(src, len)
     float sd = ta.stdev(src, len)
-    sd > 0 ? (src - m) / sd : 0.0
+    na(src) or na(m) or na(sd) or sd <= 0 ? na : (src - m) / sd
 
 f_ctx(float src, int rocLen, int normLen, bool inverse) =>
     float r = ta.roc(src, rocLen)
@@ -273,10 +277,11 @@ f_ctx(float src, int rocLen, int normLen, bool inverse) =>
 // 1.5x and inverts to -1 at 2x — over-committed positioning. Continuous
 // at every joint, so no chatter at the thresholds.
 f_posmap(float z, float dead, float extreme, float dirSign, bool fade) =>
-    float a    = math.abs(z)
-    float span = math.max(extreme - dead, 0.1)
-    float g    = a <= dead ? 0.0 : a <= extreme ? (a - dead) / span : fade ? math.max(1.0 - 2.0 * (a - extreme) / math.max(extreme, 0.1), -1.0) : 1.0
-    f_clamp(dirSign * math.sign(z) * g, -1.0, 1.0)
+    float a    = na(z) ? na : math.abs(z)
+    float ext  = math.max(extreme, dead + 0.1)
+    float span = ext - dead
+    float g    = na(a) ? na : a <= dead ? 0.0 : a <= ext ? (a - dead) / span : fade ? math.max(1.0 - 2.0 * (a - ext) / ext, -1.0) : 1.0
+    na(g) ? na : f_clamp(dirSign * math.sign(z) * g, -1.0, 1.0)
 
 f_edge(float s, float ret, int fwd, int len, bool on, float blend) =>
     float c = nz(ta.correlation(s[fwd], ret, len))
@@ -364,7 +369,7 @@ float sStruct = ((hh ? 1 : 0) + (hl ? 1 : 0) - (lh ? 1 : 0) - (ll ? 1 : 0)) / 2.
 [htfClose, htfFast, htfSlow] = request.security(
      syminfo.tickerid,
      htfTf,
-     [close[repOff], ta.ema(close, htfFastLen)[repOff], ta.ema(close, htfSlowLen)[repOff]],
+     [close[repOff], ta.ema(close[repOff], htfFastLen), ta.ema(close[repOff], htfSlowLen)],
      lookahead = barmerge.lookahead_off
 )
 
@@ -387,7 +392,7 @@ if vpDue and vpHi > vpLo
     float step = (vpHi - vpLo) / vpRows
     array<float> vols = array.new<float>(vpRows, 0.0)
     for i = 0 to vpLookback - 1
-        float bv = na(volume[i]) ? 1.0 : volume[i]
+        float bv = na(volume[i]) or volume[i] <= 0 ? 1.0 : volume[i]
         int r1 = math.max(0, math.min(vpRows - 1, int((low[i]  - vpLo) / step)))
         int r2 = math.max(0, math.min(vpRows - 1, int((high[i] - vpLo) / step)))
         float per = bv / (r2 - r1 + 1)
@@ -509,7 +514,15 @@ float vwapSd  = na(vwapVar) ? na : math.sqrt(vwapVar) * vwapMult
 float vwapUp  = vwapVal + vwapSd
 float vwapDn  = vwapVal - vwapSd
 
-float sVwap = na(vwapVal) ? na : f_clamp((close - vwapVal) / math.max(nz(vwapSd), syminfo.mintick), -1.0, 1.0)
+// Sigma is meaningless in the first bars after an anchor reset: the
+// mintick floor would otherwise saturate this component to +/-1 on
+// noise at every session open.
+const int VWAP_MIN_BARS = 10
+
+var int vwapBars = 0
+vwapBars := anchorNew or bar_index == 0 ? 1 : vwapBars + 1
+
+float sVwap = na(vwapVal) or vwapBars < VWAP_MIN_BARS or nz(vwapSd) <= 0 ? na : f_clamp((close - vwapVal) / vwapSd, -1.0, 1.0)
 
 //──────────────────────────────────────────────────────────────────────
 // C1 · Open interest vs price
@@ -523,11 +536,15 @@ float oiRaw = request.security(
      ignore_invalid_symbol = true
 )
 
+// Price is read at the same lag as the OI feed: comparing a live
+// price change against a lagged OI change measures the quadrant
+// across a one-bar offset and mislabels turns.
+float oiPx  = close[repOff]
 float dOi   = not na(oiRaw) and not na(oiRaw[oiLen]) and oiRaw[oiLen] != 0 ? oiRaw / oiRaw[oiLen] - 1.0 : na
-float dPx   = close / close[oiLen] - 1.0
+float dPx   = not na(oiPx) and not na(oiPx[oiLen]) and oiPx[oiLen] != 0 ? oiPx / oiPx[oiLen] - 1.0 : na
 float oiMag = f_clamp(math.abs(f_z(dPx, oiNorm)) / 2.0, 0.0, 1.0)
 
-float sOi = na(dOi) ? na : dPx > 0 and dOi > 0 ? oiMag : dPx > 0 and dOi <= 0 ? 0.3 * oiMag : dPx < 0 and dOi > 0 ? -oiMag : dPx < 0 and dOi <= 0 ? -0.3 * oiMag : 0.0
+float sOi = na(dOi) or na(dPx) or na(oiMag) ? na : dPx > 0 and dOi > 0 ? oiMag : dPx > 0 and dOi <= 0 ? 0.3 * oiMag : dPx < 0 and dOi > 0 ? -oiMag : dPx < 0 and dOi <= 0 ? -0.3 * oiMag : 0.0
 
 //──────────────────────────────────────────────────────────────────────
 // C2 · Put / call ratio
@@ -543,7 +560,7 @@ bool pcCfg = f_filled(pcSym)
 [pcRaw, pcZreq] = request.security(
      f_symOr(pcSym),
      dailyTf,
-     [close[repOff], f_z(close, pcNorm)[repOff]],
+     [close[repOff], f_z(close[repOff], pcNorm)],
      lookahead = barmerge.lookahead_off,
      ignore_invalid_symbol = true
 )
@@ -561,7 +578,7 @@ float sPc   = na(pcVal) ? na : f_posmap(pcZ, posDead, posExtreme, -1.0, pcFade)
 
 bool chartIsPerp = str.endswith(syminfo.tickerid, ".P")
 string perpAuto  = chartIsPerp ? syminfo.tickerid : syminfo.tickerid + ".P"
-string spotAuto  = chartIsPerp ? str.replace_all(syminfo.tickerid, ".P", "") : syminfo.tickerid
+string spotAuto  = chartIsPerp ? str.substring(syminfo.tickerid, 0, str.length(syminfo.tickerid) - 2) : syminfo.tickerid
 
 string perpSym = basisMode == "Auto" ? perpAuto : f_symOr(perpSymIn)
 string spotSym = basisMode == "Auto" ? spotAuto : f_symOr(spotSymIn)
@@ -570,10 +587,18 @@ bool basisCfg  = basisMode == "Auto" ? true : f_filled(perpSymIn) and f_filled(s
 float perpPx = request.security(perpSym, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
 float spotPx = request.security(spotSym, timeframe.period, close[repOff], lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true)
 
-bool basisOk    = basisCfg and not na(perpPx) and not na(spotPx) and spotPx > 0
-float basisPct  = basisOk ? (perpPx / spotPx - 1.0) * 100.0 : na
-float basisZ    = f_z(nz(basisPct), basisNorm)
-float sBasis    = not basisOk ? na : f_posmap(basisZ, posDead, posExtreme, 1.0, basisFade)
+bool basisLive  = basisCfg and not na(perpPx) and not na(spotPx) and spotPx > 0
+float basisPct  = basisLive ? (perpPx / spotPx - 1.0) * 100.0 : na
+
+// A feed that starts part-way through the chart leaves placeholder
+// values inside its own normalisation window, so hold the component
+// back until a full window of genuine data exists.
+var int basisN = 0
+basisN := basisLive ? basisN + 1 : basisN
+bool basisOk = basisLive and basisN >= basisNorm
+
+float basisZ = f_z(basisPct, basisNorm)
+float sBasis = not basisOk ? na : f_posmap(basisZ, posDead, posExtreme, 1.0, basisFade)
 
 //──────────────────────────────────────────────────────────────────────
 // C4 · COT net positioning
@@ -591,9 +616,14 @@ float cotShortRaw = request.security(f_symOr(cotShortSym), weeklyTf, close[repOf
 int cotBarsPerWeek = math.max(1, int(math.round(604800.0 / math.max(chartSec, 1))))
 int cotWin = math.min(cotNorm * cotBarsPerWeek, 1000)
 
-bool cotOk    = cotCfg and not na(cotLongRaw) and not na(cotShortRaw)
-float cotNet  = cotOk ? cotLongRaw - cotShortRaw : na
-float cotZ    = f_z(nz(cotNet), cotWin)
+bool cotLive  = cotCfg and not na(cotLongRaw) and not na(cotShortRaw)
+float cotNet  = cotLive ? cotLongRaw - cotShortRaw : na
+
+var int cotN = 0
+cotN := cotLive ? cotN + 1 : cotN
+bool cotOk = cotLive and cotN >= cotWin
+
+float cotZ    = f_z(cotNet, cotWin)
 float cotSign = cotGroup == "Large specs — fade" ? -1.0 : 1.0
 float sCot    = not cotOk ? na : f_posmap(cotZ, posDead, posExtreme, cotSign, false)
 
@@ -622,12 +652,19 @@ float inter2Val     = i2Cfg ? i2Raw : na
 float inter3Val     = i3Cfg ? i3Raw : na
 float rsBenchVal    = rsCfg ? rsRaw : na
 
-// Net breadth is already zero-centred: read level and extremity together
-float bnZ = f_z(nz(breadthNetVal), ctxNorm)
-float sBreadthNet = na(breadthNetVal) ? na : f_clamp(0.6 * f_clamp(bnZ / 2.0, -1.0, 1.0) + 0.4 * math.sign(nz(breadthNetVal)), -1.0, 1.0)
+// Net breadth is expected to oscillate around zero, so the raw sign
+// carries information. If the field holds a series that never goes
+// negative it is not a net-breadth feed, and the sign term would be a
+// permanent +0.4 bull bias — so fall back to the z-score alone.
+float bnZ = f_z(breadthNetVal, ctxNorm)
+bool bnCentred = not na(breadthNetVal) and ta.lowest(nz(breadthNetVal), ctxNorm) < 0
+float sBreadthNet = na(bnZ) ? na : f_clamp(bnCentred ? 0.6 * f_clamp(bnZ / 2.0, -1.0, 1.0) + 0.4 * math.sign(breadthNetVal) : f_clamp(bnZ / 2.0, -1.0, 1.0), -1.0, 1.0)
 
-// Percent-above-MA is a 0..100 scale with 50 neutral
-float sBreadthPct = na(breadthPctVal) ? na : f_clamp((breadthPctVal - 50.0) / 40.0, -1.0, 1.0)
+// Percent-above-MA is a 0..100 scale with 50 neutral. Anything that
+// leaves that range is not a percentage series, and the mapping would
+// pin to +/-1 forever, so drop the component instead.
+bool bpIsPct = not na(breadthPctVal) and ta.highest(nz(breadthPctVal), ctxNorm) <= 100.0 and ta.lowest(nz(breadthPctVal), ctxNorm) >= 0.0
+float sBreadthPct = na(breadthPctVal) or not bpIsPct ? na : f_clamp((breadthPctVal - 50.0) / 40.0, -1.0, 1.0)
 
 float sInt1 = f_ctx(inter1Val, ctxRoc, ctxNorm, interInv1)
 float sInt2 = f_ctx(inter2Val, ctxRoc, ctxNorm, interInv2)
@@ -637,7 +674,9 @@ float intSum = nz(sInt1) + nz(sInt2) + nz(sInt3)
 int   intCnt = (na(sInt1) ? 0 : 1) + (na(sInt2) ? 0 : 1) + (na(sInt3) ? 0 : 1)
 float sInter = intCnt > 0 ? intSum / intCnt : na
 
-float rsRatio = na(rsBenchVal) or rsBenchVal == 0 ? na : close / rsBenchVal
+// Both legs at the same lag. Dividing a live close by a lagged
+// benchmark injects this symbol's own one-bar return into the ratio.
+float rsRatio = na(rsBenchVal) or rsBenchVal == 0 ? na : close[repOff] / rsBenchVal
 float sRs = f_ctx(rsRatio, ctxRoc, ctxNorm, false)
 
 //──────────────────────────────────────────────────────────────────────
@@ -704,6 +743,35 @@ for l = 0 to N_LAYER - 1
         if lw > 0
             num += lw * ls
             den += lw
+
+// Conviction: weighted dispersion of the live components around their
+// own weighted mean. A score of +30 carried by fifteen quietly aligned
+// components is a different read from +30 out of open disagreement,
+// and the headline number cannot distinguish them on its own.
+float agrNum = 0.0
+float agrDen = 0.0
+int   agrCnt = 0
+for i = 0 to N_COMP - 1
+    float cs = array.get(cScore, i)
+    float cw = array.get(cLive, i)
+    if cw > 0 and not na(cs)
+        float ww = cw * array.get(lW, array.get(cLayer, i))
+        if ww > 0
+            agrNum += ww * cs
+            agrDen += ww
+            agrCnt += 1
+
+float agrMean = agrDen > 0 ? agrNum / agrDen : 0.0
+float agrVar  = 0.0
+for i = 0 to N_COMP - 1
+    float cs = array.get(cScore, i)
+    float cw = array.get(cLive, i)
+    if cw > 0 and not na(cs)
+        float ww = cw * array.get(lW, array.get(cLayer, i))
+        if ww > 0
+            agrVar += ww * math.pow(cs - agrMean, 2.0) / agrDen
+
+float agreement = agrDen > 0 ? f_clamp(1.0 - math.sqrt(agrVar), 0.0, 1.0) * 100.0 : na
 
 float score     = den > 0 ? num / den * 100.0 : 0.0
 float scoreEma  = ta.ema(score, smoothLen)
@@ -795,6 +863,13 @@ if showDash and barstate.islast
                 table.cell(dash, 2, rowN, on and not na(s) ? str.tostring(s * 100, "0") + "%" : "—", text_color = tc, text_size = txtSize)
                 table.cell(dash, 3, rowN, showWeights and array.get(cLive, i) > 0 ? str.tostring(array.get(cLive, i), "0") : "", text_color = color.new(color.gray, 40), text_size = txtSize)
                 rowN := rowN + 1
+
+    color agrCol = na(agreement) ? colNeut : agreement >= 70 ? colBull : agreement >= 45 ? colNeut : colBear
+    table.cell(dash, 0, rowN, "Conviction", text_color = color.new(color.white, 10), bgcolor = layBg, text_size = txtSize, text_halign = text.align_left)
+    table.cell(dash, 1, rowN, na(agreement) ? "n/a" : agreement >= 70 ? "aligned" : agreement >= 45 ? "mixed" : "conflicted", text_color = agrCol, bgcolor = layBg, text_size = txtSize)
+    table.cell(dash, 2, rowN, na(agreement) ? "—" : str.tostring(agreement, "0") + "%", text_color = agrCol, bgcolor = layBg, text_size = txtSize)
+    table.cell(dash, 3, rowN, str.tostring(agrCnt), text_color = color.new(color.white, 30), bgcolor = layBg, text_size = txtSize)
+    rowN := rowN + 1
 
     string feedsA = (deltaTrue ? "Δ true" : "Δ proxy") + (na(oiRaw) ? "  OI —" : "  OI ✓") + (na(pcVal) ? "  P/C —" : "  P/C ✓")
     string feedsB = (basisOk ? "basis ✓" : "basis —") + (cotOk ? "  COT ✓" : "  COT —") + (na(breadthNetVal) and na(breadthPctVal) ? "  breadth —" : "  breadth ✓")
