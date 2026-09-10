@@ -1,0 +1,138 @@
+//@version=6
+indicator("MSL - SRE", overlay = true)
+
+// ─── Inputs ───
+showLabels     = input.bool(true, "Show H/L Pattern Labels")
+showLevelLines = input.bool(true, "Show Registered Level Lines")
+highZoneColor  = input.color(color.new(color.red, 80), "High Sweep Zone")
+highZoneBorder = input.color(color.red, "High Sweep Zone Border")
+lowZoneColor   = input.color(color.new(color.green, 80), "Low Sweep Zone")
+lowZoneBorder  = input.color(color.green, "Low Sweep Zone Border")
+highLineColor  = input.color(color.new(color.red, 40), "High Level Line")
+lowLineColor   = input.color(color.new(color.green, 40), "Low Level Line")
+
+// ─── State: registered highs ───
+var array<float> hLevel = array.new<float>()
+var array<bool>  hSwept = array.new<bool>()
+var array<box>   hBox   = array.new<box>()
+var array<line>  hLine  = array.new<line>()
+
+// ─── State: registered lows ───
+var array<float> lLevel = array.new<float>()
+var array<bool>  lSwept = array.new<bool>()
+var array<box>   lBox   = array.new<box>()
+var array<line>  lLine  = array.new<line>()
+
+bull2 = close[2] > open[2]
+bear2 = close[2] < open[2]
+bull1 = close[1] > open[1]
+bear1 = close[1] < open[1]
+bull0 = close > open
+bear0 = close < open
+
+// Highs: bull, bear, bull that fails to close above candle-1's close
+//        OR bull, bear, bear
+highFormA = bull2 and bear1 and bull0 and close <= close[2]
+highFormB = bull2 and bear1 and bear0
+highFormed = bar_index > 2 and (highFormA or highFormB)
+
+// Lows: vice versa
+lowFormA = bear2 and bull1 and bear0 and close >= close[2]
+lowFormB = bear2 and bull1 and bull0
+lowFormed = bar_index > 2 and (lowFormA or lowFormB)
+
+// ─── Register a new high (highest wick of the 3 candles) ───
+if highFormed
+    offset  = high[2] >= high[1] and high[2] >= high[0] ? 2 : (high[1] >= high[0] ? 1 : 0)
+    wickVal = math.max(high[2], math.max(high[1], high))
+    wickBar = bar_index - offset
+
+    line newLine = na
+    if showLevelLines
+        newLine := line.new(wickBar, wickVal, bar_index, wickVal, color = highLineColor, style = line.style_dotted)
+    array.push(hLevel, wickVal)
+    array.push(hSwept, false)
+    array.push(hBox, na)
+    array.push(hLine, newLine)
+
+    if showLabels
+        label.new(wickBar, wickVal, "H", style = label.style_label_down, color = color.new(color.white, 100), textcolor = color.red, size = size.tiny)
+
+// ─── Register a new low (lowest wick of the 3 candles) ───
+if lowFormed
+    offset  = low[2] <= low[1] and low[2] <= low[0] ? 2 : (low[1] <= low[0] ? 1 : 0)
+    wickVal = math.min(low[2], math.min(low[1], low))
+    wickBar = bar_index - offset
+
+    line newLine = na
+    if showLevelLines
+        newLine := line.new(wickBar, wickVal, bar_index, wickVal, color = lowLineColor, style = line.style_dotted)
+    array.push(lLevel, wickVal)
+    array.push(lSwept, false)
+    array.push(lBox, na)
+    array.push(lLine, newLine)
+
+    if showLabels
+        label.new(wickBar, wickVal, "L", style = label.style_label_up, color = color.new(color.white, 100), textcolor = color.green, size = size.tiny)
+
+// ─── Process high levels: sweep then kill ───
+if array.size(hLevel) > 0
+    for i = array.size(hLevel) - 1 to 0
+        H = array.get(hLevel, i)
+        swept = array.get(hSwept, i)
+        if close > H
+            // killed: original high closed above -> remove level and its visuals
+            b = array.get(hBox, i)
+            if not na(b)
+                box.delete(b)
+            ln = array.get(hLine, i)
+            if not na(ln)
+                line.delete(ln)
+            array.remove(hLevel, i)
+            array.remove(hSwept, i)
+            array.remove(hBox, i)
+            array.remove(hLine, i)
+        else
+            ln2 = array.get(hLine, i)
+            if not na(ln2)
+                line.set_x2(ln2, bar_index)
+            if not swept and bull0 and high > H and close < H
+                // sweep: bullish candle wicks above H, closes back below it
+                newBox = box.new(left = bar_index, top = high, right = bar_index, bottom = close, border_color = highZoneBorder, bgcolor = highZoneColor)
+                array.set(hBox, i, newBox)
+                array.set(hSwept, i, true)
+            else if swept
+                bx = array.get(hBox, i)
+                if not na(bx)
+                    box.set_right(bx, bar_index)
+
+// ─── Process low levels: sweep then kill ───
+if array.size(lLevel) > 0
+    for i = array.size(lLevel) - 1 to 0
+        L = array.get(lLevel, i)
+        swept = array.get(lSwept, i)
+        if close < L
+            // killed: original low closed below -> remove level and its visuals
+            b = array.get(lBox, i)
+            if not na(b)
+                box.delete(b)
+            ln = array.get(lLine, i)
+            if not na(ln)
+                line.delete(ln)
+            array.remove(lLevel, i)
+            array.remove(lSwept, i)
+            array.remove(lBox, i)
+            array.remove(lLine, i)
+        else
+            ln2 = array.get(lLine, i)
+            if not na(ln2)
+                line.set_x2(ln2, bar_index)
+            if not swept and bear0 and low < L and close > L
+                // sweep: bearish candle wicks below L, closes back above it
+                newBox = box.new(left = bar_index, top = close, right = bar_index, bottom = low, border_color = lowZoneBorder, bgcolor = lowZoneColor)
+                array.set(lBox, i, newBox)
+                array.set(lSwept, i, true)
+            else if swept
+                bx = array.get(lBox, i)
+                if not na(bx)
+                    box.set_right(bx, bar_index)
