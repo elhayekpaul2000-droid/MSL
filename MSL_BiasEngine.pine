@@ -173,11 +173,11 @@ plot(showProt ? actLvl : na, "Protected level", color = biasCol, style = plot.st
 
 bgcolor(tintBg and bias != 0 ? color.new(biasCol, 92) : na)
 
-plotshape(showPiv and not na(ph) ? true : na, "Fractal high", shape.triangledown, location.abovebar, color.new(cBear, 40), offset = -N, size = size.tiny)
-plotshape(showPiv and not na(pl) ? true : na, "Fractal low",  shape.triangleup,   location.belowbar, color.new(cBull, 40), offset = -N, size = size.tiny)
+plotshape(showPiv and not na(ph), "Fractal high", shape.triangledown, location.abovebar, color.new(cBear, 40), offset = -N, size = size.tiny)
+plotshape(showPiv and not na(pl), "Fractal low",  shape.triangleup,   location.belowbar, color.new(cBull, 40), offset = -N, size = size.tiny)
 
-plotshape(showSwp and sweptHi ? true : na, "Sweep high", shape.xcross, location.abovebar, color.new(cBear, 0), size = size.tiny)
-plotshape(showSwp and sweptLo ? true : na, "Sweep low",  shape.xcross, location.belowbar, color.new(cBull, 0), size = size.tiny)
+plotshape(showSwp and sweptHi, "Sweep high", shape.xcross, location.abovebar, color.new(cBear, 0), size = size.tiny)
+plotshape(showSwp and sweptLo, "Sweep low",  shape.xcross, location.belowbar, color.new(cBull, 0), size = size.tiny)
 
 if showFlip and didB
     label.new(bar_index, high, "BEAR", style = label.style_label_down, color = cBear, textcolor = color.white, size = size.small)
