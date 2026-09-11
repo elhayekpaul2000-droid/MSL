@@ -1,0 +1,329 @@
+//@version=6
+indicator("MSL Bias", "MSL Bias", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+//═══════════════════════════ INPUTS ═══════════════════════════
+gS = "Structure"
+bosCloses  = input.int(3, "Closes beyond level to confirm a break", minval = 2, maxval = 10, group = gS,
+     tooltip = "First two must be back-to-back. The remaining one(s) can come at any time after.")
+reclaimWin = input.int(3, "Reclaim window (candles)", minval = 1, maxval = 20, group = gS,
+     tooltip = "After the first close through a level, closing back past that level's bodyclose inside this many candles = sweep, not a break.")
+maxLevels  = input.int(20, "Max stored levels per side", minval = 3, maxval = 100, group = gS)
+
+gV = "Visuals"
+showLv   = input.bool(true,  "Highs / lows",   group = gV)
+showBody = input.bool(false, "Bodyclose lines", group = gV)
+keepDead = input.bool(true,  "Keep dead levels on chart", group = gV)
+cHigh    = input.color(#ef5350, "High",      inline = "c", group = gV)
+cLow     = input.color(#26a69a, "Low",       inline = "c", group = gV)
+cProt    = input.color(#ffb300, "Protected", inline = "c", group = gV)
+cDead    = input.color(color.new(color.gray, 65), "Dead", inline = "c", group = gV)
+showTbl  = input.bool(true, "Bias table", group = gV)
+posTbl   = input.string("Top Right", "Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right"], group = gV)
+
+//═══════════════════════════ TYPE ═══════════════════════════
+type Lvl
+    float price      // wick extreme of the 3-candle pattern
+    float body       // bodyclose = close of candle #1
+    int   bar        // formation bar (candle #3)
+    float ext        // extreme reached during the sweep excursion
+    int   extBar     // bar of that extreme
+    int   firstBar   // bar of the first close through the level
+    int   tot        // total closes beyond the level
+    int   consec     // current back-to-back run of closes beyond
+    bool  conf2      // has produced two back-to-back closes beyond
+    bool  pending    // has closed through, outcome not decided yet
+    line  ln
+    line  bln
+
+var array<Lvl> highs = array.new<Lvl>()
+var array<Lvl> lows  = array.new<Lvl>()
+
+//═══════════════════════════ STATE ═══════════════════════════
+var int   bias      = 0        //  1 bullish | -1 bearish | 0 neutral
+var float prot      = na       // protected level price
+var int   protBar   = na
+var line  protLn    = na
+var label protLb    = na
+
+var bool  bullArm   = false    // a low has been swept -> waiting for a break above a high
+var float bullExt   = na
+var int   bullExtBar= na
+var bool  bearArm   = false    // a high has been swept -> waiting for a break below a low
+var float bearExt   = na
+var int   bearExtBar= na
+
+bool flipUp    = false
+bool flipDn    = false
+bool protBreak = false
+
+//═══════════════════════════ HELPERS ═══════════════════════════
+retire(Lvl l) =>
+    if not na(l.ln)
+        if keepDead
+            line.set_extend(l.ln, extend.none)
+            line.set_x2(l.ln, bar_index)
+            line.set_color(l.ln, cDead)
+        else
+            line.delete(l.ln)
+    if not na(l.bln)
+        if keepDead
+            line.set_extend(l.bln, extend.none)
+            line.set_x2(l.bln, bar_index)
+            line.set_color(l.bln, cDead)
+        else
+            line.delete(l.bln)
+
+//═══════════════════════════ ENGINE ═══════════════════════════
+if barstate.isconfirmed
+
+    //──────── 1. work the stored LOWS ────────
+    if array.size(lows) > 0
+        for i = array.size(lows) - 1 to 0
+            if i < array.size(lows)
+                Lvl l = array.get(lows, i)
+                bool drop = false
+
+                if bar_index > l.bar
+                    if l.pending
+                        if low < l.ext
+                            l.ext    := low
+                            l.extBar := bar_index
+
+                        if close < l.price
+                            l.tot    += 1
+                            l.consec += 1
+                            if l.consec >= 2
+                                l.conf2 := true
+                        else
+                            l.consec := 0
+
+                        if l.conf2 and l.tot >= bosCloses
+                            // confirmed break below -> bearish leg
+                            if bearArm
+                                flipDn := true
+                            drop := true
+                        else if close > l.body
+                            // reclaimed the bodyclose
+                            if bar_index - l.firstBar < reclaimWin
+                                // regular sweep of the low -> arms the bullish side
+                                bullArm    := true
+                                bullExt    := l.ext
+                                bullExtBar := l.extBar
+                            drop := true
+                    else
+                        if close < l.price
+                            l.pending  := true
+                            l.firstBar := bar_index
+                            l.tot      := 1
+                            l.consec   := 1
+                            l.ext      := low
+                            l.extBar   := bar_index
+                        else if low < l.price
+                            // wick-only sweep -> arms the bullish side immediately
+                            bullArm    := true
+                            bullExt    := low
+                            bullExtBar := bar_index
+                            drop       := true
+
+                if drop
+                    retire(l)
+                    array.remove(lows, i)
+
+    //──────── 2. work the stored HIGHS ────────
+    if array.size(highs) > 0
+        for i = array.size(highs) - 1 to 0
+            if i < array.size(highs)
+                Lvl h = array.get(highs, i)
+                bool drop = false
+
+                if bar_index > h.bar
+                    if h.pending
+                        if high > h.ext
+                            h.ext    := high
+                            h.extBar := bar_index
+
+                        if close > h.price
+                            h.tot    += 1
+                            h.consec += 1
+                            if h.consec >= 2
+                                h.conf2 := true
+                        else
+                            h.consec := 0
+
+                        if h.conf2 and h.tot >= bosCloses
+                            // confirmed break above -> bullish leg
+                            if bullArm
+                                flipUp := true
+                            drop := true
+                        else if close < h.body
+                            if bar_index - h.firstBar < reclaimWin
+                                // regular sweep of the high -> arms the bearish side
+                                bearArm    := true
+                                bearExt    := h.ext
+                                bearExtBar := h.extBar
+                            drop := true
+                    else
+                        if close > h.price
+                            h.pending  := true
+                            h.firstBar := bar_index
+                            h.tot      := 1
+                            h.consec   := 1
+                            h.ext      := high
+                            h.extBar   := bar_index
+                        else if high > h.price
+                            bearArm    := true
+                            bearExt    := high
+                            bearExtBar := bar_index
+                            drop       := true
+
+                if drop
+                    retire(h)
+                    array.remove(highs, i)
+
+    //──────── 3. apply the flips ────────
+    if flipUp
+        bias    := 1
+        prot    := bullExt
+        protBar := bullExtBar
+        bullArm := false
+        bearArm := false
+        if not na(protLn)
+            line.set_extend(protLn, extend.none)
+            line.set_x2(protLn, bar_index)
+            line.set_color(protLn, cDead)
+        protLn := line.new(protBar, prot, bar_index, prot, extend = extend.right, color = cProt, width = 2)
+        protLb := label.new(protBar, prot, "", style = label.style_circle, color = cProt, size = size.tiny)
+
+    if flipDn
+        bias    := -1
+        prot    := bearExt
+        protBar := bearExtBar
+        bearArm := false
+        bullArm := false
+        if not na(protLn)
+            line.set_extend(protLn, extend.none)
+            line.set_x2(protLn, bar_index)
+            line.set_color(protLn, cDead)
+        protLn := line.new(protBar, prot, bar_index, prot, extend = extend.right, color = cProt, width = 2)
+        protLb := label.new(protBar, prot, "", style = label.style_circle, color = cProt, size = size.tiny)
+
+    //──────── 4. protected level broken ────────
+    if not na(prot) and not flipUp and not flipDn
+        if (bias == 1 and close < prot) or (bias == -1 and close > prot)
+            protBreak := true
+            bias      := 0
+            if not na(protLn)
+                line.set_extend(protLn, extend.none)
+                line.set_x2(protLn, bar_index)
+                line.set_color(protLn, cDead)
+            if not na(protLb)
+                label.set_color(protLb, cDead)
+            prot    := na
+            protBar := na
+            protLn  := na
+
+    //──────── 5. detect new 3-candle highs / lows ────────
+    if bar_index >= 2
+        bool c1Bull = close[2] > open[2]
+        bool c1Bear = close[2] < open[2]
+        bool c2Bull = close[1] > open[1]
+        bool c2Bear = close[1] < open[1]
+        bool c3Bull = close > open
+        bool c3Bear = close < open
+
+        // HIGH : bull -> bear -> bull that fails to close above candle #1's close
+        //        bull -> bear -> bear
+        bool isHigh = c1Bull and c2Bear and ((c3Bull and close <= close[2]) or c3Bear)
+        // LOW  : mirror
+        bool isLow  = c1Bear and c2Bull and ((c3Bear and close >= close[2]) or c3Bull)
+
+        if isHigh
+            float p = math.max(high[2], math.max(high[1], high))
+            float b = close[2]
+            int   m = -1
+            for j = array.size(highs) - 1 to math.max(0, array.size(highs) - 3)
+                if j < array.size(highs) and j >= 0
+                    Lvl q = array.get(highs, j)
+                    if q.bar >= bar_index - 2 and not q.pending
+                        m := j
+                        break
+            if m >= 0
+                // overlapping pattern -> highest wick, lowest bodyclose
+                Lvl q = array.get(highs, m)
+                q.price := math.max(q.price, p)
+                q.body  := math.min(q.body,  b)
+                if not na(q.ln)
+                    line.set_y1(q.ln, q.price)
+                    line.set_y2(q.ln, q.price)
+                if not na(q.bln)
+                    line.set_y1(q.bln, q.body)
+                    line.set_y2(q.bln, q.body)
+            else
+                line nl  = na
+                line nbl = na
+                if showLv
+                    nl := line.new(bar_index - 2, p, bar_index, p, extend = extend.right, color = cHigh, width = 1)
+                if showBody
+                    nbl := line.new(bar_index - 2, b, bar_index, b, extend = extend.right, color = color.new(cHigh, 45), style = line.style_dotted)
+                array.push(highs, Lvl.new(price = p, body = b, bar = bar_index, ext = p, extBar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, ln = nl, bln = nbl))
+                if array.size(highs) > maxLevels
+                    Lvl old = array.shift(highs)
+                    retire(old)
+
+        if isLow
+            float p = math.min(low[2], math.min(low[1], low))
+            float b = close[2]
+            int   m = -1
+            for j = array.size(lows) - 1 to math.max(0, array.size(lows) - 3)
+                if j < array.size(lows) and j >= 0
+                    Lvl q = array.get(lows, j)
+                    if q.bar >= bar_index - 2 and not q.pending
+                        m := j
+                        break
+            if m >= 0
+                // overlapping pattern -> lowest wick, highest bodyclose
+                Lvl q = array.get(lows, m)
+                q.price := math.min(q.price, p)
+                q.body  := math.max(q.body,  b)
+                if not na(q.ln)
+                    line.set_y1(q.ln, q.price)
+                    line.set_y2(q.ln, q.price)
+                if not na(q.bln)
+                    line.set_y1(q.bln, q.body)
+                    line.set_y2(q.bln, q.body)
+            else
+                line nl  = na
+                line nbl = na
+                if showLv
+                    nl := line.new(bar_index - 2, p, bar_index, p, extend = extend.right, color = cLow, width = 1)
+                if showBody
+                    nbl := line.new(bar_index - 2, b, bar_index, b, extend = extend.right, color = color.new(cLow, 45), style = line.style_dotted)
+                array.push(lows, Lvl.new(price = p, body = b, bar = bar_index, ext = p, extBar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, ln = nl, bln = nbl))
+                if array.size(lows) > maxLevels
+                    Lvl old = array.shift(lows)
+                    retire(old)
+
+//═══════════════════════════ TABLE ═══════════════════════════
+if showTbl and barstate.islast
+    var table t = table.new(
+         posTbl == "Top Right"     ? position.top_right    :
+         posTbl == "Top Left"      ? position.top_left     :
+         posTbl == "Bottom Right"  ? position.bottom_right :
+         posTbl == "Bottom Left"   ? position.bottom_left  : position.middle_right,
+         2, 3, border_width = 1, border_color = color.new(color.gray, 70), frame_width = 1, frame_color = color.new(color.gray, 70))
+
+    color bCol = bias == 1 ? cLow : bias == -1 ? cHigh : color.new(color.gray, 20)
+    string bTxt = bias == 1 ? "BULLISH" : bias == -1 ? "BEARISH" : "NEUTRAL"
+    string aTxt = bullArm and bearArm ? "both" : bullArm ? "low swept" : bearArm ? "high swept" : "none"
+
+    table.cell(t, 0, 0, "BIAS",      text_color = color.white, text_size = size.small, bgcolor = color.new(color.gray, 80))
+    table.cell(t, 1, 0, bTxt,        text_color = color.white, text_size = size.small, bgcolor = color.new(bCol, 25))
+    table.cell(t, 0, 1, "Protected", text_color = color.white, text_size = size.small, bgcolor = color.new(color.gray, 80))
+    table.cell(t, 1, 1, na(prot) ? "—" : str.tostring(prot, format.mintick), text_color = color.white, text_size = size.small, bgcolor = color.new(cProt, 75))
+    table.cell(t, 0, 2, "Armed",     text_color = color.white, text_size = size.small, bgcolor = color.new(color.gray, 80))
+    table.cell(t, 1, 2, aTxt,        text_color = color.white, text_size = size.small, bgcolor = color.new(color.gray, 80))
+
+//═══════════════════════════ ALERTS ═══════════════════════════
+alertcondition(flipUp,    "Bullish flip",           "MSL Bias: flipped BULLISH")
+alertcondition(flipDn,    "Bearish flip",           "MSL Bias: flipped BEARISH")
+alertcondition(protBreak, "Protected level broken", "MSL Bias: protected level broken — bias neutral")
