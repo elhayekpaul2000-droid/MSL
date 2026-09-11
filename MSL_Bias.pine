@@ -4,7 +4,7 @@ indicator("MSL- Bias", overlay = true, max_labels_count = 500)
 // ── Inputs ───────────────────────────────────────────────────────────────────
 scanBars   = input.int(60,      "Scan bars (kill older)",          minval = 10)
 reclaimWin = input.int(4,       "Sweep reclaim window (candles)",  minval = 1)
-holdBars   = input.int(3,       "Hold candles (single-close BOS)", minval = 1)
+holdBars   = input.int(3,       "Hold candles after BOS",          minval = 1)
 hiCol      = input.color(color.new(color.red,  0),  "Protected high")
 loCol      = input.color(color.new(color.lime, 0),  "Protected low")
 tintUp     = input.color(color.new(color.lime, 90), "Bullish tint")
@@ -31,8 +31,8 @@ type Cand
     float bosPrice   // wick extreme of the opposing level being broken
     float bosBody    // bodyclose of that level
     int   bar        // sweep bar
-    int   closes     // closes beyond bosPrice so far
-    int   firstBar   // bar of the first close beyond
+    bool  broken     // first close beyond bosPrice has landed
+    int   firstBar   // bar of that first close
 
 var array<Lvl>  hiLvls = array.new<Lvl>()
 var array<Lvl>  loLvls = array.new<Lvl>()
@@ -86,32 +86,25 @@ if barstate.isconfirmed
                 // a close back through the swept level = HH / LL, sweep invalidated
                 if c.up ? close < c.ref : close > c.ref
                     drop := true
-                else
+                else if not c.broken
                     // reference stays live until the first close beyond it, then freezes
-                    if c.closes == 0
-                        c.bosPrice := c.up ? lastHiPrice : lastLoPrice
-                        c.bosBody  := c.up ? lastHiBody  : lastLoBody
+                    c.bosPrice := c.up ? lastHiPrice : lastLoPrice
+                    c.bosBody  := c.up ? lastHiBody  : lastLoBody
                     broke = na(c.bosPrice) ? false : c.up ? close > c.bosPrice : close < c.bosPrice
                     if broke
-                        c.closes := c.closes + 1
-                        if c.closes == 1
-                            c.firstBar := bar_index
-                        if c.closes >= 2
-                            // two closes beyond the wick extreme → BOS valid
-                            label.new(c.lvlBar, c.lvl, style = label.style_circle,
-                                      color = c.up ? loCol : hiCol, size = szDot)
-                            bias := c.up ? 1 : -1
-                            drop := true
-                    else if c.closes == 1
-                        held = c.up ? close >= c.bosBody : close <= c.bosBody
-                        if not held
-                            drop := true                   // reclaimed the body → BOS failed
-                        else if bar_index - c.firstBar >= holdBars
-                            // single close survived the hold → BOS valid
-                            label.new(c.lvlBar, c.lvl, style = label.style_circle,
-                                      color = c.up ? loCol : hiCol, size = szDot)
-                            bias := c.up ? 1 : -1
-                            drop := true
+                        c.broken   := true
+                        c.firstBar := bar_index
+                else
+                    // the break must hold: no close back through the bodyclose
+                    held = c.up ? close >= c.bosBody : close <= c.bosBody
+                    if not held
+                        drop := true                       // reclaimed the body → BOS failed
+                    else if bar_index - c.firstBar >= holdBars
+                        // survived the hold → BOS valid
+                        label.new(c.lvlBar, c.lvl, style = label.style_circle,
+                                  color = c.up ? loCol : hiCol, size = szDot)
+                        bias := c.up ? 1 : -1
+                        drop := true
             if not drop and bar_index - c.bar > scanBars
                 drop := true
             if drop
@@ -130,7 +123,7 @@ if barstate.isconfirmed
                     if close < l.body
                         // closed above the wick high, reclaimed back inside → swept
                         if not dupCand(false, l.price)
-                            array.push(cands, Cand.new(false, l.ext, l.extBar, l.price, na, na, bar_index, 0, 0))
+                            array.push(cands, Cand.new(false, l.ext, l.extBar, l.price, na, na, bar_index, false, 0))
                         drop := true
                     else if bar_index - l.pendBar >= reclaimWin
                         drop := true                       // no reclaim in time → level broken
@@ -142,7 +135,7 @@ if barstate.isconfirmed
                 else if high >= l.price
                     // wick / touch sweep
                     if not dupCand(false, l.price)
-                        array.push(cands, Cand.new(false, high, bar_index, l.price, na, na, bar_index, 0, 0))
+                        array.push(cands, Cand.new(false, high, bar_index, l.price, na, na, bar_index, false, 0))
                     drop := true
             if not drop and bar_index - l.bar > scanBars
                 drop := true
@@ -161,7 +154,7 @@ if barstate.isconfirmed
                         l.extBar := bar_index
                     if close > l.body
                         if not dupCand(true, l.price)
-                            array.push(cands, Cand.new(true, l.ext, l.extBar, l.price, na, na, bar_index, 0, 0))
+                            array.push(cands, Cand.new(true, l.ext, l.extBar, l.price, na, na, bar_index, false, 0))
                         drop := true
                     else if bar_index - l.pendBar >= reclaimWin
                         drop := true
@@ -172,7 +165,7 @@ if barstate.isconfirmed
                     l.extBar  := bar_index
                 else if low <= l.price
                     if not dupCand(true, l.price)
-                        array.push(cands, Cand.new(true, low, bar_index, l.price, na, na, bar_index, 0, 0))
+                        array.push(cands, Cand.new(true, low, bar_index, l.price, na, na, bar_index, false, 0))
                     drop := true
             if not drop and bar_index - l.bar > scanBars
                 drop := true
