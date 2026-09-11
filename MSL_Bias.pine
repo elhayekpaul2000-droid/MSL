@@ -1,0 +1,91 @@
+//@version=6
+indicator("MSL- Bias", overlay = true, max_labels_count = 500)
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+scanBars   = input.int(60, "Scan bars (kill older)", minval = 10)
+reclaimWin = input.int(4,  "Reclaim window (candles)", minval = 1)
+hiCol      = input.color(color.new(color.red,   0), "Swept high")
+loCol      = input.color(color.new(color.lime,  0), "Swept low")
+dotSize    = input.string("tiny", "Circle size", options = ["tiny", "small", "normal"])
+
+szDot = dotSize == "tiny" ? size.tiny : dotSize == "small" ? size.small : size.normal
+
+// ── Level object ─────────────────────────────────────────────────────────────
+type Lvl
+    float price      // wick extreme of the pattern
+    float body       // bodyclose of the first candle
+    int   bar        // bar the pattern completed on
+    bool  pending    // swept by close, waiting for reclaim
+    int   pendBar    // bar of the close sweep
+
+var array<Lvl> hiLvls = array.new<Lvl>()
+var array<Lvl> loLvls = array.new<Lvl>()
+
+bull(n) => close[n] > open[n]
+bear(n) => close[n] < open[n]
+
+// ── Pattern detection (bar 2 = first candle, bar 0 = current) ────────────────
+// High form A : bull, bear, bull that does NOT close above bodyclose of candle 1
+// High form B : bull, bear, bear
+hiA = bull(2) and bear(1) and bull(0) and close <= close[2]
+hiB = bull(2) and bear(1) and bear(0)
+// Low form A  : bear, bull, bear that does NOT close below bodyclose of candle 1
+// Low form B  : bear, bull, bull
+loA = bear(2) and bull(1) and bear(0) and close >= close[2]
+loB = bear(2) and bull(1) and bull(0)
+
+if barstate.isconfirmed
+
+    // ── Highs: sweep / reclaim / expiry ──────────────────────────────────────
+    if array.size(hiLvls) > 0
+        for i = array.size(hiLvls) - 1 to 0
+            l = array.get(hiLvls, i)
+            drop = false
+            if bar_index > l.bar
+                if l.pending
+                    if close < l.body
+                        // closed above the wick high, reclaimed back inside → sweep
+                        label.new(bar_index, l.price, style = label.style_circle, color = hiCol, size = szDot)
+                        drop := true
+                    else if bar_index - l.pendBar >= reclaimWin
+                        drop := true          // no reclaim in time → level broken
+                else if close > l.price
+                    l.pending := true
+                    l.pendBar := bar_index
+                else if high >= l.price
+                    // wick / touch sweep → confirmed immediately
+                    label.new(bar_index, l.price, style = label.style_circle, color = hiCol, size = szDot)
+                    drop := true
+            if not drop and bar_index - l.bar > scanBars
+                drop := true
+            if drop
+                array.remove(hiLvls, i)
+
+    // ── Lows: sweep / reclaim / expiry ───────────────────────────────────────
+    if array.size(loLvls) > 0
+        for i = array.size(loLvls) - 1 to 0
+            l = array.get(loLvls, i)
+            drop = false
+            if bar_index > l.bar
+                if l.pending
+                    if close > l.body
+                        label.new(bar_index, l.price, style = label.style_circle, color = loCol, size = szDot)
+                        drop := true
+                    else if bar_index - l.pendBar >= reclaimWin
+                        drop := true
+                else if close < l.price
+                    l.pending := true
+                    l.pendBar := bar_index
+                else if low <= l.price
+                    label.new(bar_index, l.price, style = label.style_circle, color = loCol, size = szDot)
+                    drop := true
+            if not drop and bar_index - l.bar > scanBars
+                drop := true
+            if drop
+                array.remove(loLvls, i)
+
+    // ── Register new levels ──────────────────────────────────────────────────
+    if hiA or hiB
+        array.push(hiLvls, Lvl.new(math.max(high, high[1], high[2]), close[2], bar_index, false, 0))
+    if loA or loB
+        array.push(loLvls, Lvl.new(math.min(low, low[1], low[2]), close[2], bar_index, false, 0))
