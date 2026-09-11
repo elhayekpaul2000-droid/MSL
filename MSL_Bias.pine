@@ -2,13 +2,14 @@
 indicator("MSL- Bias", overlay = true, max_labels_count = 500)
 
 // ---------------- inputs ----------------
-cHigh   = input.color(color.red,   "Protected high")
-cLow    = input.color(color.green, "Protected low")
-useTint = input.bool(true,         "Bias background")
+SCAN = input.int(60, "Scan window (bars)",            minval = 5,  maxval = 500, group = "Settings")
+RECW = input.int(4,  "Reclaim window (close sweeps)", minval = 1,  maxval = 50,  group = "Settings")
+BOSN = input.int(3,  "BOS confirmation candles",      minval = 1,  maxval = 50,  group = "Settings")
 
-SCAN = 60
-RECW = 4
-BOSN = 3
+cHigh   = input.color(color.red,   "Protected high", group = "Style")
+cLow    = input.color(color.green, "Protected low",  group = "Style")
+useTint = input.bool(true,         "Bias background", group = "Style")
+tintOp  = input.int(90, "Tint transparency", minval = 0, maxval = 100, group = "Style")
 
 // ---------------- types ----------------
 type Lvl
@@ -164,4 +165,4 @@ if barstate.isconfirmed
                 array.remove(circs, i)
 
 // ---------------- bias tint ----------------
-bgcolor(useTint and bias != 0 ? color.new(bias > 0 ? cLow : cHigh, 90) : na)
+bgcolor(useTint and bias != 0 ? color.new(bias > 0 ? cLow : cHigh, tintOp) : na)
