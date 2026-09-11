@@ -135,9 +135,9 @@ if barstate.isconfirmed and inScan
                             else
                                 // no high was swept first, so this is no bear flip. remember the
                                 // bodyclose: reclaiming it later still makes this a swept low.
+                                refUpBar := na(refUp) or l.ext < refUpExt ? l.extBar : refUpBar
+                                refUpExt := na(refUp) ? l.ext : math.min(refUpExt, l.ext)
                                 refUp    := na(refUp) ? l.body : math.max(refUp, l.body)
-                                refUpExt := na(refUpExt) ? l.ext : math.min(refUpExt, l.ext)
-                                refUpBar := na(refUpBar) or l.ext < refUpExt ? l.extBar : refUpBar
                             drop := true
                         else if close > l.body
                             // bodyclose reclaimed inside the window -> arms the bullish side
@@ -193,9 +193,9 @@ if barstate.isconfirmed and inScan
                             else
                                 // no low was swept first, so this is no bull flip. remember the
                                 // bodyclose: reclaiming it later still makes this a swept high.
+                                refDnBar := na(refDn) or h.ext > refDnExt ? h.extBar : refDnBar
+                                refDnExt := na(refDn) ? h.ext : math.max(refDnExt, h.ext)
                                 refDn    := na(refDn) ? h.body : math.min(refDn, h.body)
-                                refDnExt := na(refDnExt) ? h.ext : math.max(refDnExt, h.ext)
-                                refDnBar := na(refDnBar) or h.ext > refDnExt ? h.extBar : refDnBar
                             drop := true
                         else if close < h.body
                             // bodyclose reclaimed inside the window -> arms the bearish side
