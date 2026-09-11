@@ -24,7 +24,7 @@ type Lvl
 type Cand
     bool  up         // true = swept low (bullish candidate)
     float lvl        // the swept level, where the circle goes
-    float bosPrice   // wick extreme of the last opposing level
+    float bosPrice   // wick extreme of the opposing level being broken
     float bosBody    // bodyclose of that level
     int   bar        // sweep bar
     int   closes     // closes beyond bosPrice so far
@@ -59,7 +59,11 @@ if barstate.isconfirmed
             c = array.get(cands, i)
             drop = false
             if bar_index > c.bar
-                broke = c.up ? close > c.bosPrice : close < c.bosPrice
+                // reference stays live until the first close beyond it, then freezes
+                if c.closes == 0
+                    c.bosPrice := c.up ? lastHiPrice : lastLoPrice
+                    c.bosBody  := c.up ? lastHiBody  : lastLoBody
+                broke = na(c.bosPrice) ? false : c.up ? close > c.bosPrice : close < c.bosPrice
                 if broke
                     c.closes := c.closes + 1
                     if c.closes == 1
@@ -94,8 +98,7 @@ if barstate.isconfirmed
                 if l.pending
                     if close < l.body
                         // closed above the wick high, reclaimed back inside → swept
-                        if not na(lastLoPrice)
-                            array.push(cands, Cand.new(false, l.price, lastLoPrice, lastLoBody, bar_index, 0, 0))
+                        array.push(cands, Cand.new(false, l.price, na, na, bar_index, 0, 0))
                         drop := true
                     else if bar_index - l.pendBar >= reclaimWin
                         drop := true                       // no reclaim in time → level broken
@@ -104,8 +107,7 @@ if barstate.isconfirmed
                     l.pendBar := bar_index
                 else if high >= l.price
                     // wick / touch sweep
-                    if not na(lastLoPrice)
-                        array.push(cands, Cand.new(false, l.price, lastLoPrice, lastLoBody, bar_index, 0, 0))
+                    array.push(cands, Cand.new(false, l.price, na, na, bar_index, 0, 0))
                     drop := true
             if not drop and bar_index - l.bar > scanBars
                 drop := true
@@ -120,8 +122,7 @@ if barstate.isconfirmed
             if bar_index > l.bar
                 if l.pending
                     if close > l.body
-                        if not na(lastHiPrice)
-                            array.push(cands, Cand.new(true, l.price, lastHiPrice, lastHiBody, bar_index, 0, 0))
+                        array.push(cands, Cand.new(true, l.price, na, na, bar_index, 0, 0))
                         drop := true
                     else if bar_index - l.pendBar >= reclaimWin
                         drop := true
@@ -129,8 +130,7 @@ if barstate.isconfirmed
                     l.pending := true
                     l.pendBar := bar_index
                 else if low <= l.price
-                    if not na(lastHiPrice)
-                        array.push(cands, Cand.new(true, l.price, lastHiPrice, lastHiBody, bar_index, 0, 0))
+                    array.push(cands, Cand.new(true, l.price, na, na, bar_index, 0, 0))
                     drop := true
             if not drop and bar_index - l.bar > scanBars
                 drop := true
