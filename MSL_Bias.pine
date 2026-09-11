@@ -102,21 +102,24 @@ if barstate.isconfirmed and inScan
                         else
                             l.consec := 0
 
-                        if not l.broken and l.conf2 and l.tot >= bosCloses and bar_index - l.firstBar >= reclaimWin
-                            // held below past the reclaim window -> confirmed break below
+                        if not l.broken and l.conf2 and l.tot >= bosCloses
+                            // confirmed break below
                             if bearArm
                                 flipDn := true
                                 drop   := true
                             else
+                                // no high was swept first, so this is not a bear flip.
+                                // keep the low alive: reclaiming its bodyclose later still counts as a sweep.
                                 l.broken := true
                                 if not na(l.ln)
                                     line.set_color(l.ln, color.new(cLow, 55))
                         if not drop and close > l.body
-                            // bodyclose reclaimed -> the low was swept, arms the bullish side
-                            bullArm    := true
-                            bullExt    := l.ext
-                            bullExtBar := l.extBar
-                            drop       := true
+                            // bodyclose reclaimed -> arms the bullish side
+                            if l.broken or bar_index - l.firstBar < reclaimWin
+                                bullArm    := true
+                                bullExt    := l.ext
+                                bullExtBar := l.extBar
+                            drop := true
                     else
                         if close < l.price
                             l.pending  := true
@@ -157,21 +160,24 @@ if barstate.isconfirmed and inScan
                         else
                             h.consec := 0
 
-                        if not h.broken and h.conf2 and h.tot >= bosCloses and bar_index - h.firstBar >= reclaimWin
-                            // held above past the reclaim window -> confirmed break above
+                        if not h.broken and h.conf2 and h.tot >= bosCloses
+                            // confirmed break above
                             if bullArm
                                 flipUp := true
                                 drop   := true
                             else
+                                // no low was swept first, so this is not a bull flip.
+                                // keep the high alive: reclaiming its bodyclose later still counts as a sweep.
                                 h.broken := true
                                 if not na(h.ln)
                                     line.set_color(h.ln, color.new(cHigh, 55))
                         if not drop and close < h.body
-                            // bodyclose reclaimed -> the high was swept, arms the bearish side
-                            bearArm    := true
-                            bearExt    := h.ext
-                            bearExtBar := h.extBar
-                            drop       := true
+                            // bodyclose reclaimed -> arms the bearish side
+                            if h.broken or bar_index - h.firstBar < reclaimWin
+                                bearArm    := true
+                                bearExt    := h.ext
+                                bearExtBar := h.extBar
+                            drop := true
                     else
                         if close > h.price
                             h.pending  := true
