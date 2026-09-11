@@ -3,6 +3,8 @@ indicator("MSL Bias", "MSL Bias", overlay = true, max_lines_count = 500, max_lab
 
 //═══════════════════════════ INPUTS ═══════════════════════════
 gS = "Structure"
+scanBack   = input.int(60, "Scan back (bars)", minval = 10, maxval = 5000, group = gS,
+     tooltip = "Only build structure over the last N bars. Keeps the chart light and stops the bias being anchored to ancient levels.")
 bosCloses  = input.int(3, "Closes beyond level to confirm a break", minval = 2, maxval = 10, group = gS,
      tooltip = "First two must be back-to-back. The remaining one(s) can come at any time after.")
 reclaimWin = input.int(3, "Reclaim window (candles)", minval = 1, maxval = 20, group = gS,
@@ -74,7 +76,9 @@ retire(Lvl l) =>
             line.delete(l.bln)
 
 //═══════════════════════════ ENGINE ═══════════════════════════
-if barstate.isconfirmed
+bool inScan = bar_index > last_bar_index - scanBack
+
+if barstate.isconfirmed and inScan
 
     //──────── 1. work the stored LOWS ────────
     if array.size(lows) > 0
