@@ -2,15 +2,18 @@
 indicator("MSL- Bias", overlay = true, max_labels_count = 500)
 
 // ── Inputs ───────────────────────────────────────────────────────────────────
-scanBars   = input.int(60, "Scan bars (kill older)", minval = 10)
-reclaimWin = input.int(4,  "Reclaim window (candles)", minval = 1)
-hiCol      = input.color(color.new(color.red,   0), "Swept high")
-loCol      = input.color(color.new(color.lime,  0), "Swept low")
+scanBars   = input.int(60, "Scan bars (kill older)",            minval = 10)
+reclaimWin = input.int(4,  "Sweep reclaim window (candles)",    minval = 1)
+holdBars   = input.int(3,  "Hold candles (single-close BOS)",   minval = 1)
+hiCol      = input.color(color.new(color.red,  0),  "Protected high")
+loCol      = input.color(color.new(color.lime, 0),  "Protected low")
+tintUp     = input.color(color.new(color.lime, 88), "Bullish tint")
+tintDn     = input.color(color.new(color.red,  88), "Bearish tint")
 dotSize    = input.string("tiny", "Circle size", options = ["tiny", "small", "normal"])
 
 szDot = dotSize == "tiny" ? size.tiny : dotSize == "small" ? size.small : size.normal
 
-// ── Level object ─────────────────────────────────────────────────────────────
+// ── Objects ──────────────────────────────────────────────────────────────────
 type Lvl
     float price      // wick extreme of the pattern
     float body       // bodyclose of the first candle
@@ -18,8 +21,22 @@ type Lvl
     bool  pending    // swept by close, waiting for reclaim
     int   pendBar    // bar of the close sweep
 
-var array<Lvl> hiLvls = array.new<Lvl>()
-var array<Lvl> loLvls = array.new<Lvl>()
+type Cand
+    bool  up         // true = swept low (bullish candidate)
+    float lvl        // the swept level, where the circle goes
+    float bosPrice   // wick extreme of the last opposing level
+    float bosBody    // bodyclose of that level
+    int   bar        // sweep bar
+    int   closes     // closes beyond bosPrice so far
+    int   firstBar   // bar of the first close beyond
+
+var array<Lvl>  hiLvls = array.new<Lvl>()
+var array<Lvl>  loLvls = array.new<Lvl>()
+var array<Cand> cands  = array.new<Cand>()
+
+var float lastHiPrice = na, var float lastHiBody = na
+var float lastLoPrice = na, var float lastLoBody = na
+var int   bias = 0
 
 bull(n) => close[n] > open[n]
 bear(n) => close[n] < open[n]
@@ -36,7 +53,39 @@ loB = bear(2) and bull(1) and bull(0)
 
 if barstate.isconfirmed
 
-    // ── Highs: sweep / reclaim / expiry ──────────────────────────────────────
+    // ── 1. Candidates: wait for the BOS that earns the circle ────────────────
+    if array.size(cands) > 0
+        for i = array.size(cands) - 1 to 0
+            c = array.get(cands, i)
+            drop = false
+            if bar_index > c.bar
+                broke = c.up ? close > c.bosPrice : close < c.bosPrice
+                if broke
+                    c.closes := c.closes + 1
+                    if c.closes == 1
+                        c.firstBar := bar_index
+                    if c.closes >= 2
+                        // two closes beyond the wick extreme → BOS valid
+                        label.new(c.bar, c.lvl, style = label.style_circle,
+                                  color = c.up ? loCol : hiCol, size = szDot)
+                        bias := c.up ? 1 : -1
+                        drop := true
+                else if c.closes == 1
+                    held = c.up ? close >= c.bosBody : close <= c.bosBody
+                    if not held
+                        drop := true                       // reclaimed the body → BOS failed
+                    else if bar_index - c.firstBar >= holdBars
+                        // single close survived the hold → BOS valid
+                        label.new(c.bar, c.lvl, style = label.style_circle,
+                                  color = c.up ? loCol : hiCol, size = szDot)
+                        bias := c.up ? 1 : -1
+                        drop := true
+            if not drop and bar_index - c.bar > scanBars
+                drop := true
+            if drop
+                array.remove(cands, i)
+
+    // ── 2. Highs: sweep / reclaim / expiry ───────────────────────────────────
     if array.size(hiLvls) > 0
         for i = array.size(hiLvls) - 1 to 0
             l = array.get(hiLvls, i)
@@ -44,24 +93,26 @@ if barstate.isconfirmed
             if bar_index > l.bar
                 if l.pending
                     if close < l.body
-                        // closed above the wick high, reclaimed back inside → sweep
-                        label.new(bar_index, l.price, style = label.style_circle, color = hiCol, size = szDot)
+                        // closed above the wick high, reclaimed back inside → swept
+                        if not na(lastLoPrice)
+                            array.push(cands, Cand.new(false, l.price, lastLoPrice, lastLoBody, bar_index, 0, 0))
                         drop := true
                     else if bar_index - l.pendBar >= reclaimWin
-                        drop := true          // no reclaim in time → level broken
+                        drop := true                       // no reclaim in time → level broken
                 else if close > l.price
                     l.pending := true
                     l.pendBar := bar_index
                 else if high >= l.price
-                    // wick / touch sweep → confirmed immediately
-                    label.new(bar_index, l.price, style = label.style_circle, color = hiCol, size = szDot)
+                    // wick / touch sweep
+                    if not na(lastLoPrice)
+                        array.push(cands, Cand.new(false, l.price, lastLoPrice, lastLoBody, bar_index, 0, 0))
                     drop := true
             if not drop and bar_index - l.bar > scanBars
                 drop := true
             if drop
                 array.remove(hiLvls, i)
 
-    // ── Lows: sweep / reclaim / expiry ───────────────────────────────────────
+    // ── 3. Lows: sweep / reclaim / expiry ────────────────────────────────────
     if array.size(loLvls) > 0
         for i = array.size(loLvls) - 1 to 0
             l = array.get(loLvls, i)
@@ -69,7 +120,8 @@ if barstate.isconfirmed
             if bar_index > l.bar
                 if l.pending
                     if close > l.body
-                        label.new(bar_index, l.price, style = label.style_circle, color = loCol, size = szDot)
+                        if not na(lastHiPrice)
+                            array.push(cands, Cand.new(true, l.price, lastHiPrice, lastHiBody, bar_index, 0, 0))
                         drop := true
                     else if bar_index - l.pendBar >= reclaimWin
                         drop := true
@@ -77,15 +129,25 @@ if barstate.isconfirmed
                     l.pending := true
                     l.pendBar := bar_index
                 else if low <= l.price
-                    label.new(bar_index, l.price, style = label.style_circle, color = loCol, size = szDot)
+                    if not na(lastHiPrice)
+                        array.push(cands, Cand.new(true, l.price, lastHiPrice, lastHiBody, bar_index, 0, 0))
                     drop := true
             if not drop and bar_index - l.bar > scanBars
                 drop := true
             if drop
                 array.remove(loLvls, i)
 
-    // ── Register new levels ──────────────────────────────────────────────────
+    // ── 4. Register new levels ───────────────────────────────────────────────
     if hiA or hiB
-        array.push(hiLvls, Lvl.new(math.max(high, high[1], high[2]), close[2], bar_index, false, 0))
+        p = math.max(high, high[1], high[2])
+        array.push(hiLvls, Lvl.new(p, close[2], bar_index, false, 0))
+        lastHiPrice := p
+        lastHiBody  := close[2]
     if loA or loB
-        array.push(loLvls, Lvl.new(math.min(low, low[1], low[2]), close[2], bar_index, false, 0))
+        p = math.min(low, low[1], low[2])
+        array.push(loLvls, Lvl.new(p, close[2], bar_index, false, 0))
+        lastLoPrice := p
+        lastLoBody  := close[2]
+
+// ── Bias tint ────────────────────────────────────────────────────────────────
+bgcolor(bias == 1 ? tintUp : bias == -1 ? tintDn : na)
