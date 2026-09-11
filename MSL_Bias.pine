@@ -34,6 +34,7 @@ type Lvl
     int   consec     // current back-to-back run of closes beyond
     bool  conf2      // has produced two back-to-back closes beyond
     bool  pending    // has closed through, outcome not decided yet
+    bool  broken     // break confirmed, still able to arm the other side on a reclaim
     line  ln
     line  bln
 
@@ -101,19 +102,21 @@ if barstate.isconfirmed and inScan
                         else
                             l.consec := 0
 
-                        if l.conf2 and l.tot >= bosCloses
-                            // confirmed break below -> bearish leg
+                        if not l.broken and l.conf2 and l.tot >= bosCloses and bar_index - l.firstBar >= reclaimWin
+                            // held below past the reclaim window -> confirmed break below
                             if bearArm
                                 flipDn := true
-                            drop := true
-                        else if close > l.body
-                            // reclaimed the bodyclose
-                            if bar_index - l.firstBar < reclaimWin
-                                // regular sweep of the low -> arms the bullish side
-                                bullArm    := true
-                                bullExt    := l.ext
-                                bullExtBar := l.extBar
-                            drop := true
+                                drop   := true
+                            else
+                                l.broken := true
+                                if not na(l.ln)
+                                    line.set_color(l.ln, color.new(cLow, 55))
+                        if not drop and close > l.body
+                            // bodyclose reclaimed -> the low was swept, arms the bullish side
+                            bullArm    := true
+                            bullExt    := l.ext
+                            bullExtBar := l.extBar
+                            drop       := true
                     else
                         if close < l.price
                             l.pending  := true
@@ -154,18 +157,21 @@ if barstate.isconfirmed and inScan
                         else
                             h.consec := 0
 
-                        if h.conf2 and h.tot >= bosCloses
-                            // confirmed break above -> bullish leg
+                        if not h.broken and h.conf2 and h.tot >= bosCloses and bar_index - h.firstBar >= reclaimWin
+                            // held above past the reclaim window -> confirmed break above
                             if bullArm
                                 flipUp := true
-                            drop := true
-                        else if close < h.body
-                            if bar_index - h.firstBar < reclaimWin
-                                // regular sweep of the high -> arms the bearish side
-                                bearArm    := true
-                                bearExt    := h.ext
-                                bearExtBar := h.extBar
-                            drop := true
+                                drop   := true
+                            else
+                                h.broken := true
+                                if not na(h.ln)
+                                    line.set_color(h.ln, color.new(cHigh, 55))
+                        if not drop and close < h.body
+                            // bodyclose reclaimed -> the high was swept, arms the bearish side
+                            bearArm    := true
+                            bearExt    := h.ext
+                            bearExtBar := h.extBar
+                            drop       := true
                     else
                         if close > h.price
                             h.pending  := true
@@ -269,7 +275,7 @@ if barstate.isconfirmed and inScan
                     nl := line.new(bar_index - 2, p, bar_index, p, extend = extend.right, color = cHigh, width = 1)
                 if showBody
                     nbl := line.new(bar_index - 2, b, bar_index, b, extend = extend.right, color = color.new(cHigh, 45), style = line.style_dotted)
-                array.push(highs, Lvl.new(price = p, body = b, bar = bar_index, ext = p, extBar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, ln = nl, bln = nbl))
+                array.push(highs, Lvl.new(price = p, body = b, bar = bar_index, ext = p, extBar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, broken = false, ln = nl, bln = nbl))
                 if array.size(highs) > maxLevels
                     Lvl old = array.shift(highs)
                     retire(old)
@@ -302,7 +308,7 @@ if barstate.isconfirmed and inScan
                     nl := line.new(bar_index - 2, p, bar_index, p, extend = extend.right, color = cLow, width = 1)
                 if showBody
                     nbl := line.new(bar_index - 2, b, bar_index, b, extend = extend.right, color = color.new(cLow, 45), style = line.style_dotted)
-                array.push(lows, Lvl.new(price = p, body = b, bar = bar_index, ext = p, extBar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, ln = nl, bln = nbl))
+                array.push(lows, Lvl.new(price = p, body = b, bar = bar_index, ext = p, extBar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, broken = false, ln = nl, bln = nbl))
                 if array.size(lows) > maxLevels
                     Lvl old = array.shift(lows)
                     retire(old)
