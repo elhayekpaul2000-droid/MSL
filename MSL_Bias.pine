@@ -27,8 +27,6 @@ type Lvl
     float price      // wick extreme of the 3-candle pattern
     float body       // bodyclose = close of candle #1
     int   bar        // formation bar (candle #3)
-    float ext        // extreme reached during the sweep excursion
-    int   extBar     // bar of that extreme
     int   firstBar   // bar of the first close through the level
     int   tot        // total closes beyond the level
     int   consec     // current back-to-back run of closes beyond
@@ -48,18 +46,14 @@ var line  protLn    = na
 var label protLb    = na
 
 var bool  bullArm   = false    // a low has been swept -> waiting for a break above a high
-var float bullExt   = na
-var int   bullExtBar= na
+var int   bullFrom  = na       // first bar of that sweep excursion
 var bool  bearArm   = false    // a high has been swept -> waiting for a break below a low
-var float bearExt   = na
-var int   bearExtBar= na
+var int   bearFrom  = na
 
 var float refUp     = na       // close above this = a broken low was only swept after all
-var float refUpExt  = na
-var int   refUpBar  = na
+var int   refUpFrom = na
 var float refDn     = na       // close below this = a broken high was only swept after all
-var float refDnExt  = na
-var int   refDnBar  = na
+var int   refDnFrom = na
 
 bool flipUp    = false
 bool flipDn    = false
@@ -88,24 +82,14 @@ bool inScan = bar_index > last_bar_index - scanBack
 if barstate.isconfirmed and inScan
 
     //──────── 0. a level that broke without an arm can still be reclaimed ────────
-    if not na(refUp)
-        if low < refUpExt
-            refUpExt := low
-            refUpBar := bar_index
-        if close > refUp
-            bullArm    := true
-            bullExt    := refUpExt
-            bullExtBar := refUpBar
-            refUp      := na
-    if not na(refDn)
-        if high > refDnExt
-            refDnExt := high
-            refDnBar := bar_index
-        if close < refDn
-            bearArm    := true
-            bearExt    := refDnExt
-            bearExtBar := refDnBar
-            refDn      := na
+    if not na(refUp) and close > refUp
+        bullArm  := true
+        bullFrom := refUpFrom
+        refUp    := na
+    if not na(refDn) and close < refDn
+        bearArm  := true
+        bearFrom := refDnFrom
+        refDn    := na
 
     //──────── 1. work the stored LOWS ────────
     if array.size(lows) > 0
@@ -116,10 +100,6 @@ if barstate.isconfirmed and inScan
 
                 if bar_index > l.bar
                     if l.pending
-                        if low < l.ext
-                            l.ext    := low
-                            l.extBar := bar_index
-
                         if close < l.price
                             l.tot    += 1
                             l.consec += 1
@@ -135,16 +115,14 @@ if barstate.isconfirmed and inScan
                             else
                                 // no high was swept first, so this is no bear flip. remember the
                                 // bodyclose: reclaiming it later still makes this a swept low.
-                                refUpBar := na(refUp) or l.ext < refUpExt ? l.extBar : refUpBar
-                                refUpExt := na(refUp) ? l.ext : math.min(refUpExt, l.ext)
-                                refUp    := na(refUp) ? l.body : math.max(refUp, l.body)
+                                refUpFrom := na(refUp) or l.firstBar < refUpFrom ? l.firstBar : refUpFrom
+                                refUp     := na(refUp) ? l.body : math.max(refUp, l.body)
                             drop := true
                         else if close > l.body
                             // bodyclose reclaimed inside the window -> arms the bullish side
                             if bar_index - l.firstBar < reclaimWin
-                                bullArm    := true
-                                bullExt    := l.ext
-                                bullExtBar := l.extBar
+                                bullArm  := true
+                                bullFrom := l.firstBar
                             drop := true
                     else
                         if close < l.price
@@ -152,14 +130,11 @@ if barstate.isconfirmed and inScan
                             l.firstBar := bar_index
                             l.tot      := 1
                             l.consec   := 1
-                            l.ext      := low
-                            l.extBar   := bar_index
                         else if low < l.price
                             // wick-only sweep -> arms the bullish side immediately
-                            bullArm    := true
-                            bullExt    := low
-                            bullExtBar := bar_index
-                            drop       := true
+                            bullArm  := true
+                            bullFrom := bar_index
+                            drop     := true
 
                 if drop
                     retire(l)
@@ -174,10 +149,6 @@ if barstate.isconfirmed and inScan
 
                 if bar_index > h.bar
                     if h.pending
-                        if high > h.ext
-                            h.ext    := high
-                            h.extBar := bar_index
-
                         if close > h.price
                             h.tot    += 1
                             h.consec += 1
@@ -193,16 +164,14 @@ if barstate.isconfirmed and inScan
                             else
                                 // no low was swept first, so this is no bull flip. remember the
                                 // bodyclose: reclaiming it later still makes this a swept high.
-                                refDnBar := na(refDn) or h.ext > refDnExt ? h.extBar : refDnBar
-                                refDnExt := na(refDn) ? h.ext : math.max(refDnExt, h.ext)
-                                refDn    := na(refDn) ? h.body : math.min(refDn, h.body)
+                                refDnFrom := na(refDn) or h.firstBar < refDnFrom ? h.firstBar : refDnFrom
+                                refDn     := na(refDn) ? h.body : math.min(refDn, h.body)
                             drop := true
                         else if close < h.body
                             // bodyclose reclaimed inside the window -> arms the bearish side
                             if bar_index - h.firstBar < reclaimWin
-                                bearArm    := true
-                                bearExt    := h.ext
-                                bearExtBar := h.extBar
+                                bearArm  := true
+                                bearFrom := h.firstBar
                             drop := true
                     else
                         if close > h.price
@@ -210,13 +179,10 @@ if barstate.isconfirmed and inScan
                             h.firstBar := bar_index
                             h.tot      := 1
                             h.consec   := 1
-                            h.ext      := high
-                            h.extBar   := bar_index
                         else if high > h.price
-                            bearArm    := true
-                            bearExt    := high
-                            bearExtBar := bar_index
-                            drop       := true
+                            bearArm  := true
+                            bearFrom := bar_index
+                            drop     := true
 
                 if drop
                     retire(h)
@@ -224,9 +190,17 @@ if barstate.isconfirmed and inScan
 
     //──────── 3. apply the flips ────────
     if flipUp
+        // protected low = the true lowest low of the sweep excursion
+        int   lb = math.min(bar_index - bullFrom, 500)
+        float pp = low
+        int   pb = bar_index
+        for k = 0 to lb
+            if low[k] < pp
+                pp := low[k]
+                pb := bar_index - k
         bias    := 1
-        prot    := bullExt
-        protBar := bullExtBar
+        prot    := pp
+        protBar := pb
         bullArm := false
         bearArm := false
         refUp   := na
@@ -239,9 +213,17 @@ if barstate.isconfirmed and inScan
         protLb := label.new(protBar, prot, "", style = label.style_circle, color = cProt, size = size.tiny)
 
     if flipDn
+        // protected high = the true highest high of the sweep excursion
+        int   lb = math.min(bar_index - bearFrom, 500)
+        float pp = high
+        int   pb = bar_index
+        for k = 0 to lb
+            if high[k] > pp
+                pp := high[k]
+                pb := bar_index - k
         bias    := -1
-        prot    := bearExt
-        protBar := bearExtBar
+        prot    := pp
+        protBar := pb
         bearArm := false
         bullArm := false
         refUp   := na
@@ -311,7 +293,7 @@ if barstate.isconfirmed and inScan
                     nl := line.new(bar_index - 2, p, bar_index, p, extend = extend.right, color = cHigh, width = 1)
                 if showBody
                     nbl := line.new(bar_index - 2, b, bar_index, b, extend = extend.right, color = color.new(cHigh, 45), style = line.style_dotted)
-                array.push(highs, Lvl.new(price = p, body = b, bar = bar_index, ext = p, extBar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, ln = nl, bln = nbl))
+                array.push(highs, Lvl.new(price = p, body = b, bar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, ln = nl, bln = nbl))
                 if array.size(highs) > maxLevels
                     Lvl old = array.shift(highs)
                     retire(old)
@@ -344,7 +326,7 @@ if barstate.isconfirmed and inScan
                     nl := line.new(bar_index - 2, p, bar_index, p, extend = extend.right, color = cLow, width = 1)
                 if showBody
                     nbl := line.new(bar_index - 2, b, bar_index, b, extend = extend.right, color = color.new(cLow, 45), style = line.style_dotted)
-                array.push(lows, Lvl.new(price = p, body = b, bar = bar_index, ext = p, extBar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, ln = nl, bln = nbl))
+                array.push(lows, Lvl.new(price = p, body = b, bar = bar_index, firstBar = 0, tot = 0, consec = 0, conf2 = false, pending = false, ln = nl, bln = nbl))
                 if array.size(lows) > maxLevels
                     Lvl old = array.shift(lows)
                     retire(old)
