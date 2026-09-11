@@ -3,54 +3,61 @@ indicator("MSL Bias Engine — Sweep + BOS", overlay = true, max_lines_count = 5
 
 // ═══════════════════════════ INPUTS ═══════════════════════════
 gS = "Structure"
-N         = input.int(2,    "Fractal left/right bars",            minval = 1, group = gS)
-useWick   = input.bool(true,  "Wick sweep",                                   group = gS)
-useClose  = input.bool(true,  "Close sweep (reclaim body)",                   group = gS)
-maxCloses = input.int(3,    "Max closes beyond level",            minval = 1, group = gS)
-reqSweep  = input.bool(true,  "Require sweep to mint protected level",        group = gS)
+N         = input.int(2,     "Fractal left/right bars",            minval = 1, group = gS)
+useWick   = input.bool(true, "Wick sweep",                                     group = gS)
+useClose  = input.bool(true, "Close sweep (reclaim body)",                     group = gS)
+maxCloses = input.int(3,     "Max closes beyond level",            minval = 1, group = gS)
+reqSweep  = input.bool(true, "Require sweep to mint protected level",          group = gS)
 
 gV = "Visuals"
-showPiv  = input.bool(false, "Show fractals",            group = gV)
-showProt = input.bool(true,  "Show protected level",     group = gV)
-showFlip = input.bool(true,  "Show flip labels",         group = gV)
-showSwp  = input.bool(true,  "Show sweeps",              group = gV)
-tintBg   = input.bool(true,  "Tint background",          group = gV)
-cBull    = input.color(#26a69a, "Bullish", group = gV)
-cBear    = input.color(#ef5350, "Bearish", group = gV)
+showSeq = input.bool(true, "Show sequence (lines + circle)", group = gV)
+tintBg  = input.bool(true, "Tint background",                group = gV)
+cBull   = input.color(#26a69a, "Bullish", group = gV)
+cBear   = input.color(#ef5350, "Bearish", group = gV)
 
 // ═══════════════════════════ FRACTALS ═════════════════════════
 ph = ta.pivothigh(N, N)
 pl = ta.pivotlow(N, N)
 
-var float swHigh  = na   // most recent confirmed swing high
-var float swHiBod = na   // its body top  = max(open, close)
-var float swLow   = na   // most recent confirmed swing low
-var float swLoBod = na   // its body base = min(open, close)
-var bool  hiBroke = false
-var bool  loBroke = false
-var int   clsUp   = 0
-var int   clsDn   = 0
-var float hiSince = na   // highest high since swHigh formed
-var float loSince = na   // lowest low  since swLow  formed
+var float swHigh    = na   // most recent confirmed swing high
+var float swHiBod   = na   // its body top  = max(open, close)
+var int   swHighBar = na
+var float swLow     = na   // most recent confirmed swing low
+var float swLoBod   = na   // its body base = min(open, close)
+var int   swLowBar  = na
+var bool  hiBroke   = false
+var bool  loBroke   = false
+var int   clsUp     = 0
+var int   clsDn     = 0
+var float hiSince   = na   // highest high since swHigh formed
+var int   hiSinceBar= na
+var float loSince   = na   // lowest low since swLow formed
+var int   loSinceBar= na
 
 if not na(ph)
-    swHigh  := ph
-    swHiBod := math.max(open[N], close[N])
-    hiBroke := false
-    clsUp   := 0
-    hiSince := ph
+    swHigh     := ph
+    swHiBod    := math.max(open[N], close[N])
+    swHighBar  := bar_index - N
+    hiBroke    := false
+    clsUp      := 0
+    hiSince    := ph
+    hiSinceBar := bar_index - N
 
 if not na(pl)
-    swLow   := pl
-    swLoBod := math.min(open[N], close[N])
-    loBroke := false
-    clsDn   := 0
-    loSince := pl
+    swLow      := pl
+    swLoBod    := math.min(open[N], close[N])
+    swLowBar   := bar_index - N
+    loBroke    := false
+    clsDn      := 0
+    loSince    := pl
+    loSinceBar := bar_index - N
 
-if not na(swHigh)
-    hiSince := na(hiSince) ? high : math.max(hiSince, high)
-if not na(swLow)
-    loSince := na(loSince) ? low : math.min(loSince, low)
+if not na(swHigh) and (na(hiSince) or high > hiSince)
+    hiSince    := high
+    hiSinceBar := bar_index
+if not na(swLow) and (na(loSince) or low < loSince)
+    loSince    := low
+    loSinceBar := bar_index
 
 // ═══════════════════════════ SWEEP DETECTION ══════════════════
 // Wick sweep : pierces the level, closes back inside, no close beyond.
@@ -86,18 +93,21 @@ if not na(swLow) and not loBroke
 
 // ═══════════════════════════ ARMED SETUPS ═════════════════════
 // A sweep arms a mint. The mint completes on the BOS close.
-var bool  armBr  = false   // bear: swept a high, waiting for close below swing low
-var float brHi   = na      // the sweeping high  -> becomes protected high
-var float brLvl  = na      // BOS level (swing low at time of sweep)
-var bool  armBl  = false   // bull: swept a low, waiting for close above swing high
-var float blLo   = na      // the sweeping low   -> becomes protected low
-var float blLvl  = na      // BOS level (swing high at time of sweep)
+var bool  armBr = false   // bear: swept a high, waiting for close below swing low
+var float brHi  = na      // the sweeping high -> becomes protected high
+var float brLvl = na      // BOS level (swing low at time of sweep)
+var bool  armBl = false   // bull: swept a low, waiting for close above swing high
+var float blLo  = na      // the sweeping low  -> becomes protected low
+var float blLvl = na      // BOS level (swing high at time of sweep)
 
-if sweptHi and not na(swLow)
+newBr = sweptHi and not na(swLow)
+newBl = sweptLo and not na(swHigh)
+
+if newBr
     armBr := true
     brHi  := hiSince
     brLvl := swLow
-if sweptLo and not na(swHigh)
+if newBl
     armBl := true
     blLo  := loSince
     blLvl := swHigh
@@ -112,10 +122,12 @@ var float phLo   = na   // lowest  low  of current phase
 phHi := na(phHi) ? high : math.max(phHi, high)
 phLo := na(phLo) ? low  : math.min(phLo, low)
 
-flipB   = false  // -> bearish
-flipU   = false  // -> bullish
-srcBrSw = false  // bear flip came from sweep+BOS mint
-srcBlSw = false  // bull flip came from sweep+BOS mint
+flipB    = false  // -> bearish
+flipU    = false  // -> bullish
+srcBrSw  = false  // bear flip came from sweep+BOS mint
+srcBlSw  = false  // bull flip came from sweep+BOS mint
+cancelBr = false  // bear setup invalidated before BOS
+cancelBl = false  // bull setup invalidated before BOS
 
 // 1) Protected level break — unconditional, dominant rule.
 if bias == 1 and not na(protLo) and close < protLo
@@ -124,15 +136,17 @@ if bias == -1 and not na(protHi) and close > protHi
     flipU := true
 
 // 2) Sweep + BOS mint (with invalidation on reclaim of the sweep extreme).
-if armBr and not flipB
+if armBr and not flipB and not newBr
     if close > brHi
-        armBr := false
+        armBr    := false
+        cancelBr := true
     else if close < brLvl and bias != -1
         flipB   := true
         srcBrSw := true
-if armBl and not flipU
+if armBl and not flipU and not newBl
     if close < blLo
-        armBl := false
+        armBl    := false
+        cancelBl := true
     else if close > blLvl and bias != 1
         flipU   := true
         srcBlSw := true
@@ -165,24 +179,93 @@ if flipU and bias != 1
     armBl  := false
     didU   := true
 
-// ═══════════════════════════ VISUALS ══════════════════════════
+// ═══════════════════════════ SEQUENCE DRAWING ═════════════════
+// Per side: dashed line on the swept level, dashed line on the BOS level,
+// circle on the sweeping extreme. Lines extend while armed and freeze on
+// the BOS close. Circle lives until price closes back through it.
+var line  uLnSw = na, var label uTxSw = na
+var line  uLnBo = na, var label uTxBo = na
+var label uCirc = na
+var bool  uArm  = false
+var float uLvl  = na
+
+var line  dLnSw = na, var label dTxSw = na
+var line  dLnBo = na, var label dTxBo = na
+var label dCirc = na
+var bool  dArm  = false
+var float dLvl  = na
+
+txCol = chart.fg_color
+
+// ── bullish sequence ──
+if showSeq and newBl
+    if uArm
+        line.delete(uLnSw), label.delete(uTxSw), line.delete(uLnBo), label.delete(uTxBo)
+    if not na(uCirc)
+        label.delete(uCirc)
+    uLnSw := line.new(swLowBar,  swLow,  bar_index, swLow,  color = cBull, style = line.style_dashed)
+    uTxSw := label.new(int((swLowBar + bar_index) / 2),  swLow,  "swept low", style = label.style_none, textcolor = txCol, size = size.small)
+    uLnBo := line.new(swHighBar, swHigh, bar_index, swHigh, color = cBull, style = line.style_dashed)
+    uTxBo := label.new(int((swHighBar + bar_index) / 2), swHigh, "BOS",       style = label.style_none, textcolor = txCol, size = size.small)
+    uCirc := label.new(loSinceBar, loSince, "", style = label.style_circle, color = color.new(cBull, 45), size = size.small)
+    uLvl  := loSince
+    uArm  := true
+
+if uArm
+    line.set_x2(uLnSw, bar_index)
+    line.set_x2(uLnBo, bar_index)
+    label.set_x(uTxSw, int((line.get_x1(uLnSw) + bar_index) / 2))
+    label.set_x(uTxBo, int((line.get_x1(uLnBo) + bar_index) / 2))
+    if not na(uCirc) and loSince < uLvl
+        label.set_xy(uCirc, loSinceBar, loSince)
+        uLvl := loSince
+    if cancelBl
+        line.delete(uLnSw), label.delete(uTxSw), line.delete(uLnBo), label.delete(uTxBo), label.delete(uCirc)
+        uCirc := na
+        uArm  := false
+    else if didU
+        uArm := false
+
+if not na(uCirc) and not uArm and close < uLvl
+    label.delete(uCirc)
+    uCirc := na
+
+// ── bearish sequence ──
+if showSeq and newBr
+    if dArm
+        line.delete(dLnSw), label.delete(dTxSw), line.delete(dLnBo), label.delete(dTxBo)
+    if not na(dCirc)
+        label.delete(dCirc)
+    dLnSw := line.new(swHighBar, swHigh, bar_index, swHigh, color = cBear, style = line.style_dashed)
+    dTxSw := label.new(int((swHighBar + bar_index) / 2), swHigh, "swept high", style = label.style_none, textcolor = txCol, size = size.small)
+    dLnBo := line.new(swLowBar,  swLow,  bar_index, swLow,  color = cBear, style = line.style_dashed)
+    dTxBo := label.new(int((swLowBar + bar_index) / 2),  swLow,  "BOS",        style = label.style_none, textcolor = txCol, size = size.small)
+    dCirc := label.new(hiSinceBar, hiSince, "", style = label.style_circle, color = color.new(cBear, 45), size = size.small)
+    dLvl  := hiSince
+    dArm  := true
+
+if dArm
+    line.set_x2(dLnSw, bar_index)
+    line.set_x2(dLnBo, bar_index)
+    label.set_x(dTxSw, int((line.get_x1(dLnSw) + bar_index) / 2))
+    label.set_x(dTxBo, int((line.get_x1(dLnBo) + bar_index) / 2))
+    if not na(dCirc) and hiSince > dLvl
+        label.set_xy(dCirc, hiSinceBar, hiSince)
+        dLvl := hiSince
+    if cancelBr
+        line.delete(dLnSw), label.delete(dTxSw), line.delete(dLnBo), label.delete(dTxBo), label.delete(dCirc)
+        dCirc := na
+        dArm  := false
+    else if didB
+        dArm := false
+
+if not na(dCirc) and not dArm and close > dLvl
+    label.delete(dCirc)
+    dCirc := na
+
+// ═══════════════════════════ BACKGROUND ═══════════════════════
 biasCol = bias == 1 ? cBull : bias == -1 ? cBear : color.gray
-
-actLvl = bias == 1 ? protLo : bias == -1 ? protHi : na
-plot(showProt ? actLvl : na, "Protected level", color = biasCol, style = plot.style_linebr, linewidth = 2)
-
 bgcolor(tintBg and bias != 0 ? color.new(biasCol, 92) : na)
-
-plotshape(showPiv and not na(ph), "Fractal high", shape.triangledown, location.abovebar, color.new(cBear, 40), offset = -N, size = size.tiny)
-plotshape(showPiv and not na(pl), "Fractal low",  shape.triangleup,   location.belowbar, color.new(cBull, 40), offset = -N, size = size.tiny)
-
-plotshape(showSwp and sweptHi, "Sweep high", shape.xcross, location.abovebar, color.new(cBear, 0), size = size.tiny)
-plotshape(showSwp and sweptLo, "Sweep low",  shape.xcross, location.belowbar, color.new(cBull, 0), size = size.tiny)
-
-if showFlip and didB
-    label.new(bar_index, high, "BEAR", style = label.style_label_down, color = cBear, textcolor = color.white, size = size.small)
-if showFlip and didU
-    label.new(bar_index, low, "BULL", style = label.style_label_up, color = cBull, textcolor = color.white, size = size.small)
 
 // ═══════════════════════════ ALERTS ═══════════════════════════
 alertcondition(didB, "Bias -> Bearish", "Bias flipped BEARISH")
