@@ -2,12 +2,11 @@
 indicator("MSL- Bias", overlay = true, max_labels_count = 500)
 
 // ---------------- inputs ----------------
-SCAN = input.int(60, "Scan window (bars)",            minval = 5,  maxval = 500, group = "Settings")
-RECW = input.int(4,  "Reclaim window (close sweeps)", minval = 1,  maxval = 50,  group = "Settings")
-BOSN = input.int(3,  "BOS confirmation candles",      minval = 1,  maxval = 50,  group = "Settings")
+SCAN = input.int(60, "Scan window (bars)",       minval = 5, maxval = 500, group = "Settings")
+BOSN = input.int(3,  "BOS confirmation candles", minval = 1, maxval = 50,  group = "Settings")
 
-cHigh   = input.color(color.red,   "Protected high", group = "Style")
-cLow    = input.color(color.green, "Protected low",  group = "Style")
+cHigh   = input.color(color.red,   "Protected high",  group = "Style")
+cLow    = input.color(color.green, "Protected low",   group = "Style")
 useTint = input.bool(true,         "Bias background", group = "Style")
 tintOp  = input.int(90, "Tint transparency", minval = 0, maxval = 100, group = "Style")
 
@@ -24,9 +23,6 @@ type Pend
     bool  isHigh
     int   bn
     float swpx
-    bool  needRec
-    int   recCnt
-    bool  valid
     bool  bosOn
     float bosBody
     int   bosCnt
@@ -63,64 +59,57 @@ if barstate.isconfirmed
             Pend p = array.get(pends, i)
             bool drop = false
 
-            if p.needRec
-                // swept by close: must reclaim bodyclose within RECW candles
-                p.recCnt += 1
-                if p.isHigh ? close < p.body : close > p.body
-                    p.needRec := false
-                    p.valid   := true
-                else if p.recCnt >= RECW
+            if p.bosOn
+                // BOS confirmation window
+                if p.isHigh ? close >= p.bosBody : close <= p.bosBody
                     drop := true
-
-            else if p.valid
-                if p.bosOn
-                    // BOS confirmation window
-                    if p.isHigh ? close >= p.bosBody : close <= p.bosBody
-                        drop := true
-                    else
-                        p.bosCnt += 1
-                        if p.bosCnt >= BOSN
-                            // confirmed protected level
-                            label lb = label.new(x = p.bn, y = p.swpx, xloc = xloc.bar_index, text = "", style = label.style_circle, color = p.isHigh ? cHigh : cLow, size = size.tiny)
-                            array.push(circs, Circ.new(lb, p.swpx, p.isHigh))
-                            bias := p.isHigh ? -1 : 1
-                            drop := true
                 else
-                    // HH / LL by close before BOS confirms = invalid
-                    if p.isHigh ? close > p.body : close < p.body
+                    p.bosCnt += 1
+                    if p.bosCnt >= BOSN
+                        // confirmed protected level
+                        label lb = label.new(x = p.bn, y = p.swpx, xloc = xloc.bar_index, text = "", style = label.style_circle, color = p.isHigh ? cHigh : cLow, size = size.tiny)
+                        array.push(circs, Circ.new(lb, p.swpx, p.isHigh))
+                        bias := p.isHigh ? -1 : 1
                         drop := true
-                    else
-                        // look for BOS through the most recent opposite level
-                        float refPx   = na
-                        float refBody = na
-                        int   refBn   = -1
-                        if array.size(lvls) > 0
-                            for j = 0 to array.size(lvls) - 1
-                                Lvl L = array.get(lvls, j)
-                                if L.isHigh != p.isHigh and L.bn > refBn
-                                    refBn   := L.bn
-                                    refPx   := L.px
-                                    refBody := L.body
-                        if not na(refPx)
-                            if p.isHigh ? close < refPx : close > refPx
-                                p.bosOn   := true
-                                p.bosBody := refBody
-                                p.bosCnt  := 0
+            else
+                // HH / LL by close before BOS confirms = invalid
+                if p.isHigh ? close > p.body : close < p.body
+                    drop := true
+                else
+                    // look for BOS through the most recent opposite level
+                    float refPx   = na
+                    float refBody = na
+                    int   refBn   = -1
+                    if array.size(lvls) > 0
+                        for j = 0 to array.size(lvls) - 1
+                            Lvl L = array.get(lvls, j)
+                            if L.isHigh != p.isHigh and L.bn > refBn
+                                refBn   := L.bn
+                                refPx   := L.px
+                                refBody := L.body
+                    if not na(refPx)
+                        if p.isHigh ? close < refPx : close > refPx
+                            p.bosOn   := true
+                            p.bosBody := refBody
+                            p.bosCnt  := 0
 
             if drop
                 array.remove(pends, i)
             else
                 array.set(pends, i, p)
 
-    // --- sweep detection on existing levels
+    // --- sweep detection: wick through only, close must stay inside
     if array.size(lvls) > 0
         for i = array.size(lvls) - 1 to 0
             Lvl L = array.get(lvls, i)
             if L.bn < bar_index
-                bool hit = L.isHigh ? high >= L.px : low <= L.px
-                if hit
-                    bool byClose = L.isHigh ? close > L.px : close < L.px
-                    array.push(pends, Pend.new(L.px, L.body, L.isHigh, bar_index, L.isHigh ? high : low, byClose, 0, not byClose, false, na, 0))
+                bool broken = L.isHigh ? close > L.px : close < L.px
+                bool wicked = L.isHigh ? high >= L.px : low <= L.px
+                if broken
+                    // closed through the level: traded out, no sweep
+                    array.remove(lvls, i)
+                else if wicked
+                    array.push(pends, Pend.new(L.px, L.body, L.isHigh, bar_index, L.isHigh ? high : low, false, na, 0))
                     array.remove(lvls, i)
 
     // --- level detection (3 closed candles: [2] [1] [0])
