@@ -11,25 +11,26 @@ indicator(
 // Constants
 //──────────────────────────────────────────────────────────────────────
 
-const int MAX_STRUCTURES_PER_SIDE = 50
+const int MAX_STRUCTURES_PER_SIDE = 100
 
-const string GROUP_STRUCTURE  = "Structure"
-const string GROUP_APPEARANCE = "Appearance"
+const string GROUP_GENERAL   = "General"
+const string GROUP_DETECTION = "Detection"
+const string GROUP_LEVELS    = "Levels"
+const string GROUP_SWEEPS    = "Sweeps"
+const string GROUP_PROTECTED = "Protected Levels"
+const string GROUP_BIAS      = "Bias"
 
 //──────────────────────────────────────────────────────────────────────
-// Structure
+// General
 //──────────────────────────────────────────────────────────────────────
 
-bool showHighs = input.bool(
-     true,
-     "Highs",
-     group = GROUP_STRUCTURE
-)
-
-bool showLows = input.bool(
-     true,
-     "Lows",
-     group = GROUP_STRUCTURE
+int lookbackBars = input.int(
+     60,
+     "Lookback (bars)",
+     minval = 10,
+     maxval = 500,
+     tooltip = "Only structures formed within this many bars are kept. Anything older is deleted from the chart and from memory.",
+     group = GROUP_GENERAL
 )
 
 int reclaimWindow = input.int(
@@ -37,36 +38,61 @@ int reclaimWindow = input.int(
      "Reclaim window (candles)",
      minval = 1,
      maxval = 20,
-     tooltip = "A sweep made by close must reclaim the structure's body close within this many candles. If it does not, the level counts as broken instead of swept.",
-     group = GROUP_STRUCTURE
-)
-
-bool showSweepMarkers = input.bool(
-     true,
-     "Sweep markers",
-     group = GROUP_STRUCTURE
-)
-
-bool showBiasMarkers = input.bool(
-     true,
-     "Bias markers",
-     group = GROUP_STRUCTURE
+     tooltip = "A sweep made by close must reclaim the structure's body close within this many candles. If it does not, the level counts as broken instead of swept and is deleted.",
+     group = GROUP_GENERAL
 )
 
 //──────────────────────────────────────────────────────────────────────
-// Appearance
+// Detection
 //──────────────────────────────────────────────────────────────────────
 
-color bullColor = input.color(
-     color.lime,
-     "Bullish color",
-     group = GROUP_APPEARANCE
+bool allowFormA = input.bool(
+     true,
+     "Form A — bull, bear, failed bull",
+     tooltip = "High: bull candle, bear candle, then a bull candle that fails to close above the body close of the first. Mirrored for lows.",
+     group = GROUP_DETECTION
 )
 
-color bearColor = input.color(
+bool allowFormB = input.bool(
+     true,
+     "Form B — bull, bear, bear",
+     tooltip = "High: bull candle followed by two bear candles. Mirrored for lows.",
+     group = GROUP_DETECTION
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Levels
+//──────────────────────────────────────────────────────────────────────
+
+bool showHighs = input.bool(
+     true,
+     "Show highs",
+     group = GROUP_LEVELS
+)
+
+bool showLows = input.bool(
+     true,
+     "Show lows",
+     group = GROUP_LEVELS
+)
+
+bool keepSweptLevels = input.bool(
+     false,
+     "Keep swept levels on chart",
+     tooltip = "OFF: a level is deleted the moment it is swept or broken. ON: swept levels stay until they age out of the lookback.",
+     group = GROUP_LEVELS
+)
+
+color highColor = input.color(
      color.red,
-     "Bearish color",
-     group = GROUP_APPEARANCE
+     "High color",
+     group = GROUP_LEVELS
+)
+
+color lowColor = input.color(
+     color.lime,
+     "Low color",
+     group = GROUP_LEVELS
 )
 
 int levelWidth = input.int(
@@ -74,46 +100,269 @@ int levelWidth = input.int(
      "Level width",
      minval = 1,
      maxval = 5,
-     group = GROUP_APPEARANCE
+     group = GROUP_LEVELS
 )
 
-string markerSizeInput = input.string(
-     "Small",
-     "Marker size",
+string levelStyleInput = input.string(
+     "Solid",
+     "Level style",
+     options = [
+         "Solid",
+         "Dashed",
+         "Dotted"
+     ],
+     group = GROUP_LEVELS
+)
+
+bool showLevelTags = input.bool(
+     false,
+     "Level tags",
+     tooltip = "Prints H or L at the right edge of each live level.",
+     group = GROUP_LEVELS
+)
+
+string levelTagSizeInput = input.string(
+     "Tiny",
+     "Level tag size",
      options = [
          "Tiny",
          "Small",
          "Normal",
          "Large"
      ],
-     group = GROUP_APPEARANCE
+     group = GROUP_LEVELS
 )
 
-markerSize = switch markerSizeInput
+string fontInput = input.string(
+     "Default",
+     "Font",
+     options = [
+         "Default",
+         "Monospace"
+     ],
+     group = GROUP_LEVELS
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Sweeps
+//──────────────────────────────────────────────────────────────────────
+
+bool showSweepMarkers = input.bool(
+     true,
+     "Sweep markers",
+     group = GROUP_SWEEPS
+)
+
+string sweepShapeInput = input.string(
+     "Label",
+     "Sweep shape",
+     options = [
+         "Label",
+         "Triangle",
+         "Arrow",
+         "Circle",
+         "Cross"
+     ],
+     group = GROUP_SWEEPS
+)
+
+string sweepSizeInput = input.string(
+     "Small",
+     "Sweep size",
+     options = [
+         "Tiny",
+         "Small",
+         "Normal",
+         "Large"
+     ],
+     group = GROUP_SWEEPS
+)
+
+bool showSweepText = input.bool(
+     true,
+     "Sweep text",
+     group = GROUP_SWEEPS
+)
+
+color sweepHighColor = input.color(
+     color.red,
+     "High sweep color",
+     group = GROUP_SWEEPS
+)
+
+color sweepLowColor = input.color(
+     color.lime,
+     "Low sweep color",
+     group = GROUP_SWEEPS
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Protected Levels
+//──────────────────────────────────────────────────────────────────────
+
+bool showProtected = input.bool(
+     true,
+     "Protected levels",
+     tooltip = "A swept low whose sweep goes on to break above the two most recent highs is a protected low. Mirrored for protected highs.",
+     group = GROUP_PROTECTED
+)
+
+string protectedSizeInput = input.string(
+     "Small",
+     "Protected size",
+     options = [
+         "Tiny",
+         "Small",
+         "Normal",
+         "Large"
+     ],
+     group = GROUP_PROTECTED
+)
+
+bool showProtectedText = input.bool(
+     false,
+     "Protected text",
+     group = GROUP_PROTECTED
+)
+
+color protectedHighColor = input.color(
+     color.red,
+     "Protected high color",
+     group = GROUP_PROTECTED
+)
+
+color protectedLowColor = input.color(
+     color.lime,
+     "Protected low color",
+     group = GROUP_PROTECTED
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Bias
+//──────────────────────────────────────────────────────────────────────
+
+bool showBiasMarkers = input.bool(
+     true,
+     "Bias markers",
+     group = GROUP_BIAS
+)
+
+string biasSizeInput = input.string(
+     "Small",
+     "Bias size",
+     options = [
+         "Tiny",
+         "Small",
+         "Normal",
+         "Large"
+     ],
+     group = GROUP_BIAS
+)
+
+bool showBiasTint = input.bool(
+     true,
+     "Background tint",
+     group = GROUP_BIAS
+)
+
+int tintTransparency = input.int(
+     92,
+     "Tint transparency",
+     minval = 0,
+     maxval = 100,
+     group = GROUP_BIAS
+)
+
+color biasBullColor = input.color(
+     color.lime,
+     "Bullish bias color",
+     group = GROUP_BIAS
+)
+
+color biasBearColor = input.color(
+     color.red,
+     "Bearish bias color",
+     group = GROUP_BIAS
+)
+
+//──────────────────────────────────────────────────────────────────────
+// Resolved cosmetics
+//──────────────────────────────────────────────────────────────────────
+
+levelStyle = switch levelStyleInput
+    "Dashed" => line.style_dashed
+    "Dotted" => line.style_dotted
+    => line.style_solid
+
+levelTagSize = switch levelTagSizeInput
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.tiny
+
+sweepSize = switch sweepSizeInput
     "Tiny"   => size.tiny
     "Normal" => size.normal
     "Large"  => size.large
     => size.small
 
+protectedSize = switch protectedSizeInput
+    "Tiny"   => size.tiny
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+
+biasSize = switch biasSizeInput
+    "Tiny"   => size.tiny
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+
+markerFont = switch fontInput
+    "Monospace" => font.family_monospace
+    => font.family_default
+
+sweepStyleDown = switch sweepShapeInput
+    "Triangle" => label.style_triangledown
+    "Arrow"    => label.style_arrowdown
+    "Circle"   => label.style_circle
+    "Cross"    => label.style_xcross
+    => label.style_label_down
+
+sweepStyleUp = switch sweepShapeInput
+    "Triangle" => label.style_triangleup
+    "Arrow"    => label.style_arrowup
+    "Circle"   => label.style_circle
+    "Cross"    => label.style_xcross
+    => label.style_label_up
+
+// Shapes other than Label have no text area worth reading, so text is
+// only attached when the label shape is selected.
+bool sweepTextOn = showSweepText and sweepShapeInput == "Label"
+
 //──────────────────────────────────────────────────────────────────────
 // Types
 //──────────────────────────────────────────────────────────────────────
 
-// A structure is one confirmed high or low.
-//   wickLevel — the extreme wick of the three pattern candles, the price
-//               that has to be taken for a sweep.
-//   bodyLevel — the body close of the first candle of the pattern. Used
-//               both for the reclaim test after a close sweep and for the
-//               two-structure bias trigger.
+// One confirmed high or low.
+//   wickLevel   — extreme wick of the three pattern candles, the price
+//                 that has to be taken for a sweep.
+//   bodyLevel   — body close of the first candle of the pattern. Used for
+//                 the reclaim test and for the two-structure bias trigger.
+//   sweepExtreme— furthest price reached while the sweep was in progress.
+//                 This is what becomes a protected level.
 type Structure
     float wickLevel
     float bodyLevel
     int   originIndex
     line  drawing
+    label tag
     bool  swept
     bool  pendingClose
     int   pendingIndex
     bool  invalidated
+    int   sweepIndex
+    float sweepExtreme
 
 //──────────────────────────────────────────────────────────────────────
 // State
@@ -122,10 +371,23 @@ type Structure
 var array<Structure> highs = array.new<Structure>()
 var array<Structure> lows  = array.new<Structure>()
 
+// Body closes of the last two structures per side. Held separately from
+// the drawing arrays so that deleting dead levels never breaks the bias
+// trigger.
+var array<float> highBodies = array.new<float>()
+var array<float> lowBodies  = array.new<float>()
+
 // -1 bearish, 0 neutral, +1 bullish
 var int  bias      = 0
 var bool bearArmed = false
 var bool bullArmed = false
+
+// Sweep that armed the current side, kept so its extreme can be marked
+// as a protected level once the bias actually flips.
+var int   armedHighSweepIndex   = na
+var float armedHighSweepExtreme = na
+var int   armedLowSweepIndex    = na
+var float armedLowSweepExtreme  = na
 
 bool highSweptNow = false
 bool lowSweptNow  = false
@@ -142,8 +404,17 @@ isBullAt(int offset) =>
 isBearAt(int offset) =>
     close[offset] < open[offset]
 
-registerStructure(array<Structure> store, float wickLevel, float bodyLevel, int originIndex, color tone, bool visible) =>
-    line drawing = na
+pushBody(array<float> store, float level) =>
+    array.push(store, level)
+
+    if array.size(store) > 2
+        array.shift(store)
+
+    array.size(store)
+
+registerStructure(array<Structure> store, float wickLevel, float bodyLevel, int originIndex, color tone, bool visible, string tagText) =>
+    line  drawing = na
+    label tag     = na
 
     if visible
         drawing := line.new(
@@ -152,8 +423,23 @@ registerStructure(array<Structure> store, float wickLevel, float bodyLevel, int 
              bar_index,
              wickLevel,
              color = tone,
-             width = levelWidth
+             width = levelWidth,
+             style = levelStyle
             )
+
+        if showLevelTags
+            tag := label.new(
+                 bar_index,
+                 wickLevel,
+                 text      = tagText,
+                 style     = label.style_label_left,
+                 color     = color.new(tone, 100),
+                 textcolor = tone,
+                 size      = levelTagSize,
+                 textalign = text.align_left
+                )
+
+            label.set_text_font_family(tag, markerFont)
 
     array.push(
          store,
@@ -162,10 +448,13 @@ registerStructure(array<Structure> store, float wickLevel, float bodyLevel, int 
              bodyLevel,
              originIndex,
              drawing,
+             tag,
              false,
              false,
              0,
-             false
+             false,
+             0,
+             na
             )
         )
 
@@ -175,26 +464,29 @@ registerStructure(array<Structure> store, float wickLevel, float bodyLevel, int 
         if not na(dropped.drawing)
             line.delete(dropped.drawing)
 
+        if not na(dropped.tag)
+            label.delete(dropped.tag)
+
     array.size(store)
 
 //──────────────────────────────────────────────────────────────────────
 // Detection
 //──────────────────────────────────────────────────────────────────────
 
-// The pattern occupies bars [3], [2], [1], so it is only registered once
-// all three candles are closed. Nothing repaints.
+// The pattern occupies bars [3], [2], [1], so a structure is only
+// registered once all three of its candles are closed. Nothing repaints.
 //
 // High, form A: bull, bear, then a bull that fails to close above the
 //               body close of the first candle.
 // High, form B: bull followed by two bears.
 // Low is the mirror of both forms.
 
-bool highFormA = isBullAt(3) and isBearAt(2) and isBullAt(1) and close[1] <= close[3]
-bool highFormB = isBullAt(3) and isBearAt(2) and isBearAt(1)
+bool highFormA = allowFormA and isBullAt(3) and isBearAt(2) and isBullAt(1) and close[1] <= close[3]
+bool highFormB = allowFormB and isBullAt(3) and isBearAt(2) and isBearAt(1)
 bool newHigh   = highFormA or highFormB
 
-bool lowFormA = isBearAt(3) and isBullAt(2) and isBearAt(1) and close[1] >= close[3]
-bool lowFormB = isBearAt(3) and isBullAt(2) and isBullAt(1)
+bool lowFormA = allowFormA and isBearAt(3) and isBullAt(2) and isBearAt(1) and close[1] >= close[3]
+bool lowFormB = allowFormB and isBearAt(3) and isBullAt(2) and isBullAt(1)
 bool newLow   = lowFormA or lowFormB
 
 if newHigh
@@ -203,9 +495,12 @@ if newHigh
          math.max(high[3], high[2], high[1]),
          close[3],
          bar_index - 3,
-         bearColor,
-         showHighs
+         highColor,
+         showHighs,
+         "H"
         )
+
+    pushBody(highBodies, close[3])
 
 if newLow
     registerStructure(
@@ -213,72 +508,131 @@ if newLow
          math.min(low[3], low[2], low[1]),
          close[3],
          bar_index - 3,
-         bullColor,
-         showLows
+         lowColor,
+         showLows,
+         "L"
         )
 
+    pushBody(lowBodies, close[3])
+
 //──────────────────────────────────────────────────────────────────────
-// Sweeps
+// Sweeps and level lifecycle
 //──────────────────────────────────────────────────────────────────────
 
-// A high is swept by touching its wick level and closing back under it,
-// or by closing above it and then reclaiming its body close within the
-// reclaim window. A close above with no reclaim means the level was
-// simply broken, and it stops being tradable liquidity.
+// A high is swept by tagging its wick level and closing back under it, or
+// by closing above it and reclaiming its body close within the reclaim
+// window. A close above with no reclaim means the level was broken, not
+// swept, and it dies. Levels also die once swept, or once they are older
+// than the lookback. Dead levels are removed from the array and their
+// drawings deleted.
 
 if array.size(highs) > 0
-    for i = 0 to array.size(highs) - 1
-        Structure h = array.get(highs, i)
+    for i = array.size(highs) - 1 to 0
+        Structure h    = array.get(highs, i)
+        bool      drop = false
 
         if not h.swept and not h.invalidated
             if h.pendingClose
+                h.sweepExtreme := math.max(h.sweepExtreme, high)
+
                 if close < h.bodyLevel
-                    h.swept        := true
-                    h.pendingClose := false
-                    highSweptNow   := true
+                    h.swept               := true
+                    h.pendingClose        := false
+                    highSweptNow          := true
+                    armedHighSweepIndex   := h.sweepIndex
+                    armedHighSweepExtreme := h.sweepExtreme
                 else if bar_index - h.pendingIndex >= reclaimWindow
                     h.invalidated := true
             else if close > h.wickLevel
                 h.pendingClose := true
                 h.pendingIndex := bar_index
+                h.sweepIndex   := bar_index
+                h.sweepExtreme := high
             else if high >= h.wickLevel
-                h.swept      := true
-                highSweptNow := true
+                h.swept               := true
+                h.sweepIndex          := bar_index
+                h.sweepExtreme        := high
+                highSweptNow          := true
+                armedHighSweepIndex   := bar_index
+                armedHighSweepExtreme := high
 
+            if h.invalidated or (h.swept and not keepSweptLevels)
+                drop := true
+            else if h.swept
+                if not na(h.drawing)
+                    line.set_style(h.drawing, line.style_dotted)
+
+        if bar_index - h.originIndex > lookbackBars
+            drop := true
+
+        if drop
+            if not na(h.drawing)
+                line.delete(h.drawing)
+
+            if not na(h.tag)
+                label.delete(h.tag)
+
+            array.remove(highs, i)
+        else if not h.swept
             if not na(h.drawing)
                 line.set_x2(h.drawing, bar_index)
 
-                if h.swept
-                    line.set_style(h.drawing, line.style_dashed)
-                else if h.invalidated
-                    line.set_color(h.drawing, color.new(bearColor, 70))
+            if not na(h.tag)
+                label.set_x(h.tag, bar_index)
 
 if array.size(lows) > 0
-    for i = 0 to array.size(lows) - 1
-        Structure l = array.get(lows, i)
+    for i = array.size(lows) - 1 to 0
+        Structure l    = array.get(lows, i)
+        bool      drop = false
 
         if not l.swept and not l.invalidated
             if l.pendingClose
+                l.sweepExtreme := math.min(l.sweepExtreme, low)
+
                 if close > l.bodyLevel
-                    l.swept        := true
-                    l.pendingClose := false
-                    lowSweptNow    := true
+                    l.swept              := true
+                    l.pendingClose       := false
+                    lowSweptNow          := true
+                    armedLowSweepIndex   := l.sweepIndex
+                    armedLowSweepExtreme := l.sweepExtreme
                 else if bar_index - l.pendingIndex >= reclaimWindow
                     l.invalidated := true
             else if close < l.wickLevel
                 l.pendingClose := true
                 l.pendingIndex := bar_index
+                l.sweepIndex   := bar_index
+                l.sweepExtreme := low
             else if low <= l.wickLevel
-                l.swept     := true
-                lowSweptNow := true
+                l.swept              := true
+                l.sweepIndex         := bar_index
+                l.sweepExtreme       := low
+                lowSweptNow          := true
+                armedLowSweepIndex   := bar_index
+                armedLowSweepExtreme := low
 
+            if l.invalidated or (l.swept and not keepSweptLevels)
+                drop := true
+            else if l.swept
+                if not na(l.drawing)
+                    line.set_style(l.drawing, line.style_dotted)
+
+        if bar_index - l.originIndex > lookbackBars
+            drop := true
+
+        if drop
+            if not na(l.drawing)
+                line.delete(l.drawing)
+
+            if not na(l.tag)
+                label.delete(l.tag)
+
+            array.remove(lows, i)
+        else if not l.swept
             if not na(l.drawing)
                 line.set_x2(l.drawing, bar_index)
 
-                if l.swept
-                    line.set_style(l.drawing, line.style_dashed)
-                else if l.invalidated
-                    line.set_color(l.drawing, color.new(bullColor, 70))
+            if not na(l.tag)
+                label.set_x(l.tag, bar_index)
 
 //──────────────────────────────────────────────────────────────────────
 // Bias
@@ -297,10 +651,8 @@ if lowSweptNow
     bullArmed := true
     bearArmed := false
 
-if bearArmed and array.size(lows) >= 2
-    Structure l1 = array.get(lows, array.size(lows) - 1)
-    Structure l2 = array.get(lows, array.size(lows) - 2)
-    float bearTrigger = math.min(l1.bodyLevel, l2.bodyLevel)
+if bearArmed and array.size(lowBodies) >= 2
+    float bearTrigger = math.min(array.get(lowBodies, 0), array.get(lowBodies, 1))
 
     if close < bearTrigger
         bearArmed := false
@@ -309,10 +661,8 @@ if bearArmed and array.size(lows) >= 2
             bias        := -1
             biasBearNow := true
 
-if bullArmed and array.size(highs) >= 2
-    Structure h1 = array.get(highs, array.size(highs) - 1)
-    Structure h2 = array.get(highs, array.size(highs) - 2)
-    float bullTrigger = math.max(h1.bodyLevel, h2.bodyLevel)
+if bullArmed and array.size(highBodies) >= 2
+    float bullTrigger = math.max(array.get(highBodies, 0), array.get(highBodies, 1))
 
     if close > bullTrigger
         bullArmed := false
@@ -326,54 +676,96 @@ if bullArmed and array.size(highs) >= 2
 //──────────────────────────────────────────────────────────────────────
 
 if highSweptNow and showSweepMarkers
-    label.new(
+    label sweepMarker = label.new(
          bar_index,
          high,
-         text      = "sweep",
-         style     = label.style_label_down,
-         color     = color.new(bearColor, 100),
-         textcolor = bearColor,
-         size      = markerSize
+         text      = sweepTextOn ? "sweep" : "",
+         style     = sweepStyleDown,
+         color     = sweepShapeInput == "Label" ? color.new(sweepHighColor, 100) : sweepHighColor,
+         textcolor = sweepHighColor,
+         size      = sweepSize
         )
+
+    label.set_text_font_family(sweepMarker, markerFont)
 
 if lowSweptNow and showSweepMarkers
-    label.new(
+    label sweepMarker = label.new(
          bar_index,
          low,
-         text      = "sweep",
-         style     = label.style_label_up,
-         color     = color.new(bullColor, 100),
-         textcolor = bullColor,
-         size      = markerSize
+         text      = sweepTextOn ? "sweep" : "",
+         style     = sweepStyleUp,
+         color     = sweepShapeInput == "Label" ? color.new(sweepLowColor, 100) : sweepLowColor,
+         textcolor = sweepLowColor,
+         size      = sweepSize
         )
 
+    label.set_text_font_family(sweepMarker, markerFont)
+
+// A protected level is the extreme of the sweep that armed the flip, so it
+// is only drawn once the bias actually confirms.
+if biasBearNow and showProtected and not na(armedHighSweepExtreme)
+    label protectedMarker = label.new(
+         armedHighSweepIndex,
+         armedHighSweepExtreme,
+         text      = showProtectedText ? "P" : "",
+         style     = label.style_circle,
+         color     = protectedHighColor,
+         textcolor = color.white,
+         size      = protectedSize
+        )
+
+    label.set_text_font_family(protectedMarker, markerFont)
+
+if biasBullNow and showProtected and not na(armedLowSweepExtreme)
+    label protectedMarker = label.new(
+         armedLowSweepIndex,
+         armedLowSweepExtreme,
+         text      = showProtectedText ? "P" : "",
+         style     = label.style_circle,
+         color     = protectedLowColor,
+         textcolor = color.white,
+         size      = protectedSize
+        )
+
+    label.set_text_font_family(protectedMarker, markerFont)
+
 if biasBearNow and showBiasMarkers
-    label.new(
+    label biasMarker = label.new(
          bar_index,
          low,
          text      = "bearish",
          style     = label.style_label_up,
-         color     = bearColor,
+         color     = biasBearColor,
          textcolor = color.white,
-         size      = markerSize
+         size      = biasSize
         )
 
+    label.set_text_font_family(biasMarker, markerFont)
+
 if biasBullNow and showBiasMarkers
-    label.new(
+    label biasMarker = label.new(
          bar_index,
          high,
          text      = "bullish",
          style     = label.style_label_down,
-         color     = bullColor,
+         color     = biasBullColor,
          textcolor = color.white,
-         size      = markerSize
+         size      = biasSize
         )
+
+    label.set_text_font_family(biasMarker, markerFont)
+
+bgcolor(
+     showBiasTint and bias == 1  ? color.new(biasBullColor, tintTransparency) :
+     showBiasTint and bias == -1 ? color.new(biasBearColor, tintTransparency) :
+     na
+    )
 
 //──────────────────────────────────────────────────────────────────────
 // Alerts
 //──────────────────────────────────────────────────────────────────────
 
-alertcondition(highSweptNow, "High swept", "MSL: high swept")
-alertcondition(lowSweptNow,  "Low swept",  "MSL: low swept")
-alertcondition(biasBearNow,  "Bias bearish", "MSL: bias flipped bearish")
-alertcondition(biasBullNow,  "Bias bullish", "MSL: bias flipped bullish")
+alertcondition(highSweptNow, "High swept",    "MSL: high swept")
+alertcondition(lowSweptNow,  "Low swept",     "MSL: low swept")
+alertcondition(biasBearNow,  "Bias bearish",  "MSL: bias flipped bearish")
+alertcondition(biasBullNow,  "Bias bullish",  "MSL: bias flipped bullish")
