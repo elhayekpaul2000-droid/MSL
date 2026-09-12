@@ -1,0 +1,134 @@
+//@version=6
+indicator("MSL- Bias", overlay = true, max_labels_count = 500)
+
+// ============================== INPUTS ==============================
+LB       = input.int(60,  "Scan / expiry (bars)", minval = 10)
+showTint = input.bool(true, "Tint background with bias")
+cBull    = input.color(color.new(color.lime, 0),  "Bullish (protected low)")
+cBear    = input.color(color.new(color.red,  0),  "Bearish (protected high)")
+tintOp   = input.int(88, "Background transparency", minval = 50, maxval = 99)
+
+// ============================== HELPERS =============================
+bullC(i) => close[i] > open[i]
+bearC(i) => close[i] < open[i]
+
+// ============================== STORAGE =============================
+var hiP  = array.new<float>()   // high levels (price = highest wick of the 3 candles)
+var hiB  = array.new<int>()
+var loP  = array.new<float>()   // low levels  (price = lowest wick of the 3 candles)
+var loB  = array.new<int>()
+
+var shP  = array.new<float>()   // pending high sweeps (sweep wick)
+var shB  = array.new<int>()
+var slP  = array.new<float>()   // pending low sweeps
+var slB  = array.new<int>()
+
+var prHP = array.new<float>()   // protected highs (red circles)
+var prHL = array.new<label>()
+var prLP = array.new<float>()   // protected lows  (green circles)
+var prLL = array.new<label>()
+
+var int bias = 0                // -1 bearish, +1 bullish
+
+// =================== 1) EXPIRE ANYTHING OLDER THAN LB ===============
+while array.size(hiB) > 0 and bar_index - array.get(hiB, 0) > LB
+    array.shift(hiP)
+    array.shift(hiB)
+while array.size(loB) > 0 and bar_index - array.get(loB, 0) > LB
+    array.shift(loP)
+    array.shift(loB)
+while array.size(shB) > 0 and bar_index - array.get(shB, 0) > LB
+    array.shift(shP)
+    array.shift(shB)
+while array.size(slB) > 0 and bar_index - array.get(slB, 0) > LB
+    array.shift(slP)
+    array.shift(slB)
+
+// ============ 2) SWEEPS (wick through level, close back inside) =====
+if array.size(hiP) > 0
+    for i = array.size(hiP) - 1 to 0
+        p = array.get(hiP, i)
+        if high >= p and close < p
+            array.push(shP, high)
+            array.push(shB, bar_index)
+            array.remove(hiP, i)
+            array.remove(hiB, i)
+
+if array.size(loP) > 0
+    for i = array.size(loP) - 1 to 0
+        p = array.get(loP, i)
+        if low <= p and close > p
+            array.push(slP, low)
+            array.push(slB, bar_index)
+            array.remove(loP, i)
+            array.remove(loB, i)
+
+// ======== 3) BOS = close beyond the 2 most recent opposite levels ====
+float bosDn = na
+if array.size(loP) >= 2
+    n = array.size(loP)
+    bosDn := math.min(array.get(loP, n - 1), array.get(loP, n - 2))
+
+float bosUp = na
+if array.size(hiP) >= 2
+    n = array.size(hiP)
+    bosUp := math.max(array.get(hiP, n - 1), array.get(hiP, n - 2))
+
+// swept high + close below lowest wick of last two lows -> protected high
+if array.size(shP) > 0 and not na(bosDn) and close < bosDn
+    for i = array.size(shP) - 1 to 0
+        w  = array.get(shP, i)
+        b  = array.get(shB, i)
+        lb = label.new(b, w, "", style = label.style_circle, color = cBear, size = size.tiny)
+        array.push(prHP, w)
+        array.push(prHL, lb)
+        array.remove(shP, i)
+        array.remove(shB, i)
+    bias := -1
+
+// swept low + close above highest wick of last two highs -> protected low
+if array.size(slP) > 0 and not na(bosUp) and close > bosUp
+    for i = array.size(slP) - 1 to 0
+        w  = array.get(slP, i)
+        b  = array.get(slB, i)
+        lb = label.new(b, w, "", style = label.style_circle, color = cBull, size = size.tiny)
+        array.push(prLP, w)
+        array.push(prLL, lb)
+        array.remove(slP, i)
+        array.remove(slB, i)
+    bias := 1
+
+// ============ 4) INVALIDATE PROTECTED LEVELS ON A CLOSE THROUGH =====
+if array.size(prHP) > 0
+    for i = array.size(prHP) - 1 to 0
+        if close > array.get(prHP, i)
+            label.delete(array.get(prHL, i))
+            array.remove(prHP, i)
+            array.remove(prHL, i)
+
+if array.size(prLP) > 0
+    for i = array.size(prLP) - 1 to 0
+        if close < array.get(prLP, i)
+            label.delete(array.get(prLL, i))
+            array.remove(prLP, i)
+            array.remove(prLL, i)
+
+// ===================== 5) NEW 3-CANDLE LEVELS =======================
+// HIGH  A: bull, bear, bull that does NOT close above candle-1's close
+// HIGH  B: bull, bear, bear
+hiA = bullC(2) and bearC(1) and bullC(0) and close <= close[2]
+hiB_= bullC(2) and bearC(1) and bearC(0)
+if hiA or hiB_
+    array.push(hiP, math.max(high[2], high[1], high[0]))
+    array.push(hiB, bar_index)
+
+// LOW   A: bear, bull, bear that does NOT close below candle-1's close
+// LOW   B: bear, bull, bull
+loA = bearC(2) and bullC(1) and bearC(0) and close >= close[2]
+loB_= bearC(2) and bullC(1) and bullC(0)
+if loA or loB_
+    array.push(loP, math.min(low[2], low[1], low[0]))
+    array.push(loB, bar_index)
+
+// ============================ BIAS TINT =============================
+bgcolor(showTint and bias != 0 ? color.new(bias == 1 ? cBull : cBear, tintOp) : na)
