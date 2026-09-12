@@ -63,6 +63,19 @@ if array.size(loP) > 0
             array.remove(loP, i)
             array.remove(loB, i)
 
+// ==== 2b) PENDING SWEEP DIES IF PRICE CLOSES BACK THROUGH ITS WICK ==
+if array.size(shP) > 0
+    for i = array.size(shP) - 1 to 0
+        if close > array.get(shP, i)
+            array.remove(shP, i)
+            array.remove(shB, i)
+
+if array.size(slP) > 0
+    for i = array.size(slP) - 1 to 0
+        if close < array.get(slP, i)
+            array.remove(slP, i)
+            array.remove(slB, i)
+
 // ======== 3) BOS = close beyond the 2 most recent opposite levels ====
 float bosDn = na
 if array.size(loP) >= 2
