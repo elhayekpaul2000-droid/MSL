@@ -45,9 +45,11 @@ f_dn(pa, ref) =>
 var hiP  = array.new<float>()   // sweepable high levels (highest wick of its 3 candles)
 var hiB  = array.new<int>()
 var hiC  = array.new<float>()   // bodyclose = close of the formation's 1st candle
+var hiK  = array.new<int>()     // 0 = intact, else deadline bar to reclaim bodyclose
 var loP  = array.new<float>()
 var loB  = array.new<int>()
 var loC  = array.new<float>()
+var loK  = array.new<int>()
 
 var hsP  = array.new<float>()   // full formation history (BOS reference only)
 var hsB  = array.new<int>()
@@ -86,10 +88,12 @@ while array.size(hiB) > 0 and bar_index - array.get(hiB, 0) > LB
     array.shift(hiP)
     array.shift(hiB)
     array.shift(hiC)
+    array.shift(hiK)
 while array.size(loB) > 0 and bar_index - array.get(loB, 0) > LB
     array.shift(loP)
     array.shift(loB)
     array.shift(loC)
+    array.shift(loK)
 while array.size(hsB) > 0 and bar_index - array.get(hsB, 0) > LB
     array.shift(hsP)
     array.shift(hsB)
@@ -142,6 +146,7 @@ if isHi and array.size(hiP) > 0
             array.remove(hiP, i)
             array.remove(hiB, i)
             array.remove(hiC, i)
+            array.remove(hiK, i)
 
 if isLo and array.size(loP) > 0
     for i = array.size(loP) - 1 to 0
@@ -162,6 +167,7 @@ if isLo and array.size(loP) > 0
             array.remove(loP, i)
             array.remove(loB, i)
             array.remove(loC, i)
+            array.remove(loK, i)
 
 // ===== 3b) RESOLVE PROVISIONALS: reclaim = sweep, timeout = break ====
 if array.size(pvHP) > 0
@@ -240,20 +246,34 @@ if array.size(slP) > 0
             array.remove(slT, i)
             bias := 1
 
-// ==== 5) KILL SWEEPABLE LEVELS PRICE HAS CLOSED THROUGH =============
+// ==== 5) CLOSE THROUGH A LEVEL = SAME RECLAIM GRACE, NOT AN INSTANT KILL
 if array.size(hiP) > 0
     for i = array.size(hiP) - 1 to 0
-        if close > array.get(hiP, i)
+        d = array.get(hiK, i)
+        if d == 0
+            if close > array.get(hiP, i)
+                array.set(hiK, i, bar_index + RC)
+        else if close < array.get(hiC, i)
+            array.set(hiK, i, 0)
+        else if bar_index > d
             array.remove(hiP, i)
             array.remove(hiB, i)
             array.remove(hiC, i)
+            array.remove(hiK, i)
 
 if array.size(loP) > 0
     for i = array.size(loP) - 1 to 0
-        if close < array.get(loP, i)
+        d = array.get(loK, i)
+        if d == 0
+            if close < array.get(loP, i)
+                array.set(loK, i, bar_index + RC)
+        else if close > array.get(loC, i)
+            array.set(loK, i, 0)
+        else if bar_index > d
             array.remove(loP, i)
             array.remove(loB, i)
             array.remove(loC, i)
+            array.remove(loK, i)
 
 // ============ 6) INVALIDATE PROTECTED LEVELS ON A CLOSE THROUGH =====
 if array.size(prHP) > 0
@@ -275,12 +295,14 @@ if isHi
     array.push(hiP, hiWick)
     array.push(hiB, bar_index)
     array.push(hiC, close[2])
+    array.push(hiK, 0)
     array.push(hsP, hiWick)
     array.push(hsB, bar_index)
 if isLo
     array.push(loP, loWick)
     array.push(loB, bar_index)
     array.push(loC, close[2])
+    array.push(loK, 0)
     array.push(lsP, loWick)
     array.push(lsB, bar_index)
 
