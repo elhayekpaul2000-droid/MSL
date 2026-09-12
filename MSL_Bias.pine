@@ -98,7 +98,20 @@ if array.size(slP) > 0 and not na(bosUp) and close > bosUp
         array.remove(slB, i)
     bias := 1
 
-// ============ 4) INVALIDATE PROTECTED LEVELS ON A CLOSE THROUGH =====
+// ==== 4) KILL LEVELS PRICE HAS CLOSED THROUGH (broken, not swept) ===
+if array.size(hiP) > 0
+    for i = array.size(hiP) - 1 to 0
+        if close > array.get(hiP, i)
+            array.remove(hiP, i)
+            array.remove(hiB, i)
+
+if array.size(loP) > 0
+    for i = array.size(loP) - 1 to 0
+        if close < array.get(loP, i)
+            array.remove(loP, i)
+            array.remove(loB, i)
+
+// ============ 5) INVALIDATE PROTECTED LEVELS ON A CLOSE THROUGH =====
 if array.size(prHP) > 0
     for i = array.size(prHP) - 1 to 0
         if close > array.get(prHP, i)
@@ -113,7 +126,7 @@ if array.size(prLP) > 0
             array.remove(prLP, i)
             array.remove(prLL, i)
 
-// ===================== 5) NEW 3-CANDLE LEVELS =======================
+// ===================== 6) NEW 3-CANDLE LEVELS =======================
 // HIGH  A: bull, bear, bull that does NOT close above candle-1's close
 // HIGH  B: bull, bear, bear
 hiA = bullC(2) and bearC(1) and bullC(0) and close <= close[2]
