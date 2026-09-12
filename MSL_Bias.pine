@@ -13,14 +13,16 @@ bullC(i) => close[i] > open[i]
 bearC(i) => close[i] < open[i]
 
 // ============================== STORAGE =============================
-var hiP  = array.new<float>()   // high levels (price = highest wick of the 3 candles)
-var hiB  = array.new<int>()
-var loP  = array.new<float>()   // low levels  (price = lowest wick of the 3 candles)
+var hiP  = array.new<float>()   // high levels (price = highest wick of its 3 candles)
+var hiB  = array.new<int>()     // bar of the 3rd candle of the formation
+var loP  = array.new<float>()
 var loB  = array.new<int>()
 
-var shP  = array.new<float>()   // pending high sweeps (sweep wick)
-var shB  = array.new<int>()
-var slP  = array.new<float>()   // pending low sweeps
+var shP  = array.new<float>()   // pending high sweeps (wick price)
+var shW  = array.new<int>()     // bar of that wick (circle position)
+var shB  = array.new<int>()     // bar the sweep happened
+var slP  = array.new<float>()
+var slW  = array.new<int>()
 var slB  = array.new<int>()
 
 var prHP = array.new<float>()   // protected highs (red circles)
@@ -39,44 +41,64 @@ while array.size(loB) > 0 and bar_index - array.get(loB, 0) > LB
     array.shift(loB)
 while array.size(shB) > 0 and bar_index - array.get(shB, 0) > LB
     array.shift(shP)
+    array.shift(shW)
     array.shift(shB)
 while array.size(slB) > 0 and bar_index - array.get(slB, 0) > LB
     array.shift(slP)
+    array.shift(slW)
     array.shift(slB)
 
-// ============ 2) SWEEPS (wick through level, close back inside) =====
-if array.size(hiP) > 0
+// ================= 2) 3-CANDLE FORMATION ON THIS BAR ================
+// HIGH  A: bull, bear, bull that does NOT close above candle-1's close
+// HIGH  B: bull, bear, bear
+isHi = bullC(2) and bearC(1) and (bearC(0) or (bullC(0) and close <= close[2]))
+// LOW   A: bear, bull, bear that does NOT close below candle-1's close
+// LOW   B: bear, bull, bull
+isLo = bearC(2) and bullC(1) and (bullC(0) or (bearC(0) and close >= close[2]))
+
+float hiWick = math.max(high[2], high[1], high[0])
+int   hiWickB = high[0] == hiWick ? bar_index : high[1] == hiWick ? bar_index - 1 : bar_index - 2
+float loWick = math.min(low[2], low[1], low[0])
+int   loWickB = low[0] == loWick ? bar_index : low[1] == loWick ? bar_index - 1 : bar_index - 2
+
+// ====== 3) SWEEP = a NEW formation takes the old level's wick =======
+//        and the formation's last candle closes back inside
+if isHi and array.size(hiP) > 0
     for i = array.size(hiP) - 1 to 0
         p = array.get(hiP, i)
-        if high >= p and close < p
-            array.push(shP, high)
+        if bar_index - array.get(hiB, i) >= 3 and hiWick >= p and close < p
+            array.push(shP, hiWick)
+            array.push(shW, hiWickB)
             array.push(shB, bar_index)
             array.remove(hiP, i)
             array.remove(hiB, i)
 
-if array.size(loP) > 0
+if isLo and array.size(loP) > 0
     for i = array.size(loP) - 1 to 0
         p = array.get(loP, i)
-        if low <= p and close > p
-            array.push(slP, low)
+        if bar_index - array.get(loB, i) >= 3 and loWick <= p and close > p
+            array.push(slP, loWick)
+            array.push(slW, loWickB)
             array.push(slB, bar_index)
             array.remove(loP, i)
             array.remove(loB, i)
 
-// ==== 2b) PENDING SWEEP DIES IF PRICE CLOSES BACK THROUGH ITS WICK ==
+// ==== 3b) PENDING SWEEP DIES IF PRICE CLOSES BACK THROUGH ITS WICK ==
 if array.size(shP) > 0
     for i = array.size(shP) - 1 to 0
         if close > array.get(shP, i)
             array.remove(shP, i)
+            array.remove(shW, i)
             array.remove(shB, i)
 
 if array.size(slP) > 0
     for i = array.size(slP) - 1 to 0
         if close < array.get(slP, i)
             array.remove(slP, i)
+            array.remove(slW, i)
             array.remove(slB, i)
 
-// ======== 3) BOS = close beyond the 2 most recent opposite levels ====
+// ======== 4) BOS = close beyond the 2 most recent opposite levels ====
 float bosDn = na
 if array.size(loP) >= 2
     n = array.size(loP)
@@ -91,11 +113,12 @@ if array.size(hiP) >= 2
 if array.size(shP) > 0 and not na(bosDn) and close < bosDn
     for i = array.size(shP) - 1 to 0
         w  = array.get(shP, i)
-        b  = array.get(shB, i)
+        b  = array.get(shW, i)
         lb = label.new(b, w, "", style = label.style_circle, color = cBear, size = size.tiny)
         array.push(prHP, w)
         array.push(prHL, lb)
         array.remove(shP, i)
+        array.remove(shW, i)
         array.remove(shB, i)
     bias := -1
 
@@ -103,15 +126,16 @@ if array.size(shP) > 0 and not na(bosDn) and close < bosDn
 if array.size(slP) > 0 and not na(bosUp) and close > bosUp
     for i = array.size(slP) - 1 to 0
         w  = array.get(slP, i)
-        b  = array.get(slB, i)
+        b  = array.get(slW, i)
         lb = label.new(b, w, "", style = label.style_circle, color = cBull, size = size.tiny)
         array.push(prLP, w)
         array.push(prLL, lb)
         array.remove(slP, i)
+        array.remove(slW, i)
         array.remove(slB, i)
     bias := 1
 
-// ==== 4) KILL LEVELS PRICE HAS CLOSED THROUGH (broken, not swept) ===
+// ==== 5) KILL LEVELS PRICE HAS CLOSED THROUGH (broken, not swept) ===
 if array.size(hiP) > 0
     for i = array.size(hiP) - 1 to 0
         if close > array.get(hiP, i)
@@ -124,7 +148,7 @@ if array.size(loP) > 0
             array.remove(loP, i)
             array.remove(loB, i)
 
-// ============ 5) INVALIDATE PROTECTED LEVELS ON A CLOSE THROUGH =====
+// ============ 6) INVALIDATE PROTECTED LEVELS ON A CLOSE THROUGH =====
 if array.size(prHP) > 0
     for i = array.size(prHP) - 1 to 0
         if close > array.get(prHP, i)
@@ -139,21 +163,12 @@ if array.size(prLP) > 0
             array.remove(prLP, i)
             array.remove(prLL, i)
 
-// ===================== 6) NEW 3-CANDLE LEVELS =======================
-// HIGH  A: bull, bear, bull that does NOT close above candle-1's close
-// HIGH  B: bull, bear, bear
-hiA = bullC(2) and bearC(1) and bullC(0) and close <= close[2]
-hiB_= bullC(2) and bearC(1) and bearC(0)
-if hiA or hiB_
-    array.push(hiP, math.max(high[2], high[1], high[0]))
+// ================= 7) STORE THIS BAR'S NEW FORMATIONS ===============
+if isHi
+    array.push(hiP, hiWick)
     array.push(hiB, bar_index)
-
-// LOW   A: bear, bull, bear that does NOT close below candle-1's close
-// LOW   B: bear, bull, bull
-loA = bearC(2) and bullC(1) and bearC(0) and close >= close[2]
-loB_= bearC(2) and bullC(1) and bullC(0)
-if loA or loB_
-    array.push(loP, math.min(low[2], low[1], low[0]))
+if isLo
+    array.push(loP, loWick)
     array.push(loB, bar_index)
 
 // ============================ BIAS TINT =============================
