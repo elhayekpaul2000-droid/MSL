@@ -13,29 +13,66 @@ tintOp   = input.int(88, "Background transparency", minval = 50, maxval = 99)
 bullC(i) => close[i] > open[i]
 bearC(i) => close[i] < open[i]
 
+// 2 most recent levels sitting ABOVE ref -> take the higher one
+f_up(pa, ref) =>
+    float t = na
+    int  c = 0
+    if array.size(pa) > 0
+        for i = array.size(pa) - 1 to 0
+            p = array.get(pa, i)
+            if p > ref
+                t := na(t) ? p : math.max(t, p)
+                c += 1
+                if c >= 2
+                    break
+    t
+
+// 2 most recent levels sitting BELOW ref -> take the lower one
+f_dn(pa, ref) =>
+    float t = na
+    int  c = 0
+    if array.size(pa) > 0
+        for i = array.size(pa) - 1 to 0
+            p = array.get(pa, i)
+            if p < ref
+                t := na(t) ? p : math.min(t, p)
+                c += 1
+                if c >= 2
+                    break
+    t
+
 // ============================== STORAGE =============================
-var hiP  = array.new<float>()   // high level price = highest wick of its 3 candles
-var hiB  = array.new<int>()     // bar of the formation's 3rd candle
+var hiP  = array.new<float>()   // sweepable high levels (highest wick of its 3 candles)
+var hiB  = array.new<int>()
 var hiC  = array.new<float>()   // bodyclose = close of the formation's 1st candle
 var loP  = array.new<float>()
 var loB  = array.new<int>()
 var loC  = array.new<float>()
 
+var hsP  = array.new<float>()   // full formation history (BOS reference only)
+var hsB  = array.new<int>()
+var lsP  = array.new<float>()
+var lsB  = array.new<int>()
+
 var shP  = array.new<float>()   // pending high sweeps: wick price
 var shW  = array.new<int>()     // bar of that wick (circle position)
-var shB  = array.new<int>()     // bar the sweep confirmed
+var shB  = array.new<int>()     // bar the sweep registered
+var shT  = array.new<float>()   // BOS target, snapshotted at sweep time
 var slP  = array.new<float>()
 var slW  = array.new<int>()
 var slB  = array.new<int>()
+var slT  = array.new<float>()
 
-var pvHP = array.new<float>()   // provisional high sweeps (closed through, awaiting reclaim)
+var pvHP = array.new<float>()   // provisional sweeps (closed through, awaiting reclaim)
 var pvHW = array.new<int>()
 var pvHR = array.new<float>()   // bodyclose to reclaim
 var pvHD = array.new<int>()     // deadline bar
+var pvHT = array.new<float>()
 var pvLP = array.new<float>()
 var pvLW = array.new<int>()
 var pvLR = array.new<float>()
 var pvLD = array.new<int>()
+var pvLT = array.new<float>()
 
 var prHP = array.new<float>()   // protected highs (red circles)
 var prHL = array.new<label>()
@@ -53,14 +90,22 @@ while array.size(loB) > 0 and bar_index - array.get(loB, 0) > LB
     array.shift(loP)
     array.shift(loB)
     array.shift(loC)
+while array.size(hsB) > 0 and bar_index - array.get(hsB, 0) > LB
+    array.shift(hsP)
+    array.shift(hsB)
+while array.size(lsB) > 0 and bar_index - array.get(lsB, 0) > LB
+    array.shift(lsP)
+    array.shift(lsB)
 while array.size(shB) > 0 and bar_index - array.get(shB, 0) > LB
     array.shift(shP)
     array.shift(shW)
     array.shift(shB)
+    array.shift(shT)
 while array.size(slB) > 0 and bar_index - array.get(slB, 0) > LB
     array.shift(slP)
     array.shift(slW)
     array.shift(slB)
+    array.shift(slT)
 
 // ================= 2) 3-CANDLE FORMATION ON THIS BAR ================
 // HIGH A: bull, bear, bull that does NOT close above candle-1's close
@@ -76,80 +121,78 @@ float loWick  = math.min(low[2], low[1], low[0])
 int   loWickB = low[0] == loWick ? bar_index : low[1] == loWick ? bar_index - 1 : bar_index - 2
 
 // ====== 3) SWEEP = a NEW formation takes the old level's wick =======
-// closes back inside  -> confirmed sweep
-// closes through it   -> provisional, needs a bodyclose reclaim within RC candles
+// closes back inside -> confirmed sweep
+// closes through it  -> provisional, needs a bodyclose reclaim within RC candles
 if isHi and array.size(hiP) > 0
     for i = array.size(hiP) - 1 to 0
         p = array.get(hiP, i)
         if bar_index - array.get(hiB, i) >= 3 and hiWick >= p
+            tgt = f_dn(lsP, close)
             if close < p
                 array.push(shP, hiWick)
                 array.push(shW, hiWickB)
                 array.push(shB, bar_index)
-                array.remove(hiP, i)
-                array.remove(hiB, i)
-                array.remove(hiC, i)
+                array.push(shT, tgt)
             else
                 array.push(pvHP, hiWick)
                 array.push(pvHW, hiWickB)
                 array.push(pvHR, array.get(hiC, i))
                 array.push(pvHD, bar_index + RC)
-                array.remove(hiP, i)
-                array.remove(hiB, i)
-                array.remove(hiC, i)
+                array.push(pvHT, tgt)
+            array.remove(hiP, i)
+            array.remove(hiB, i)
+            array.remove(hiC, i)
 
 if isLo and array.size(loP) > 0
     for i = array.size(loP) - 1 to 0
         p = array.get(loP, i)
         if bar_index - array.get(loB, i) >= 3 and loWick <= p
+            tgt = f_up(hsP, close)
             if close > p
                 array.push(slP, loWick)
                 array.push(slW, loWickB)
                 array.push(slB, bar_index)
-                array.remove(loP, i)
-                array.remove(loB, i)
-                array.remove(loC, i)
+                array.push(slT, tgt)
             else
                 array.push(pvLP, loWick)
                 array.push(pvLW, loWickB)
                 array.push(pvLR, array.get(loC, i))
                 array.push(pvLD, bar_index + RC)
-                array.remove(loP, i)
-                array.remove(loB, i)
-                array.remove(loC, i)
+                array.push(pvLT, tgt)
+            array.remove(loP, i)
+            array.remove(loB, i)
+            array.remove(loC, i)
 
-// ===== 3b) RESOLVE PROVISIONALS: reclaim = sweep, timeout = break =====
+// ===== 3b) RESOLVE PROVISIONALS: reclaim = sweep, timeout = break ====
 if array.size(pvHP) > 0
     for i = array.size(pvHP) - 1 to 0
-        if close < array.get(pvHR, i)
-            array.push(shP, array.get(pvHP, i))
-            array.push(shW, array.get(pvHW, i))
-            array.push(shB, bar_index)
+        promote = close < array.get(pvHR, i)
+        if promote or bar_index > array.get(pvHD, i)
+            if promote
+                array.push(shP, array.get(pvHP, i))
+                array.push(shW, array.get(pvHW, i))
+                array.push(shB, bar_index)
+                array.push(shT, array.get(pvHT, i))
             array.remove(pvHP, i)
             array.remove(pvHW, i)
             array.remove(pvHR, i)
             array.remove(pvHD, i)
-        else if bar_index > array.get(pvHD, i)
-            array.remove(pvHP, i)
-            array.remove(pvHW, i)
-            array.remove(pvHR, i)
-            array.remove(pvHD, i)
+            array.remove(pvHT, i)
 
 if array.size(pvLP) > 0
     for i = array.size(pvLP) - 1 to 0
-        if close > array.get(pvLR, i)
-            array.push(slP, array.get(pvLP, i))
-            array.push(slW, array.get(pvLW, i))
-            array.push(slB, bar_index)
+        promote = close > array.get(pvLR, i)
+        if promote or bar_index > array.get(pvLD, i)
+            if promote
+                array.push(slP, array.get(pvLP, i))
+                array.push(slW, array.get(pvLW, i))
+                array.push(slB, bar_index)
+                array.push(slT, array.get(pvLT, i))
             array.remove(pvLP, i)
             array.remove(pvLW, i)
             array.remove(pvLR, i)
             array.remove(pvLD, i)
-        else if bar_index > array.get(pvLD, i)
-            array.remove(pvLP, i)
-            array.remove(pvLW, i)
-            array.remove(pvLR, i)
-            array.remove(pvLD, i)
+            array.remove(pvLT, i)
 
 // ==== 3c) PENDING SWEEP DIES IF PRICE CLOSES BACK THROUGH ITS WICK ==
 if array.size(shP) > 0
@@ -158,6 +201,7 @@ if array.size(shP) > 0
             array.remove(shP, i)
             array.remove(shW, i)
             array.remove(shB, i)
+            array.remove(shT, i)
 
 if array.size(slP) > 0
     for i = array.size(slP) - 1 to 0
@@ -165,45 +209,38 @@ if array.size(slP) > 0
             array.remove(slP, i)
             array.remove(slW, i)
             array.remove(slB, i)
+            array.remove(slT, i)
 
-// ======= 4) BOS = close beyond the 2 most recent opposite levels =====
-float bosDn = na
-if array.size(loP) >= 2
-    n = array.size(loP)
-    bosDn := math.min(array.get(loP, n - 1), array.get(loP, n - 2))
-
-float bosUp = na
-if array.size(hiP) >= 2
-    n = array.size(hiP)
-    bosUp := math.max(array.get(hiP, n - 1), array.get(hiP, n - 2))
-
-// swept high + close below lowest wick of last two lows -> protected high
-if array.size(shP) > 0 and not na(bosDn) and close < bosDn
+// ========= 4) BOS = close beyond the snapshotted target =============
+if array.size(shP) > 0
     for i = array.size(shP) - 1 to 0
-        w  = array.get(shP, i)
-        b  = array.get(shW, i)
-        lb = label.new(b, w, "", style = label.style_circle, color = cBear, size = size.tiny)
-        array.push(prHP, w)
-        array.push(prHL, lb)
-        array.remove(shP, i)
-        array.remove(shW, i)
-        array.remove(shB, i)
-    bias := -1
+        t = array.get(shT, i)
+        if not na(t) and close < t
+            w  = array.get(shP, i)
+            lb = label.new(array.get(shW, i), w, "", style = label.style_circle, color = cBear, size = size.tiny)
+            array.push(prHP, w)
+            array.push(prHL, lb)
+            array.remove(shP, i)
+            array.remove(shW, i)
+            array.remove(shB, i)
+            array.remove(shT, i)
+            bias := -1
 
-// swept low + close above highest wick of last two highs -> protected low
-if array.size(slP) > 0 and not na(bosUp) and close > bosUp
+if array.size(slP) > 0
     for i = array.size(slP) - 1 to 0
-        w  = array.get(slP, i)
-        b  = array.get(slW, i)
-        lb = label.new(b, w, "", style = label.style_circle, color = cBull, size = size.tiny)
-        array.push(prLP, w)
-        array.push(prLL, lb)
-        array.remove(slP, i)
-        array.remove(slW, i)
-        array.remove(slB, i)
-    bias := 1
+        t = array.get(slT, i)
+        if not na(t) and close > t
+            w  = array.get(slP, i)
+            lb = label.new(array.get(slW, i), w, "", style = label.style_circle, color = cBull, size = size.tiny)
+            array.push(prLP, w)
+            array.push(prLL, lb)
+            array.remove(slP, i)
+            array.remove(slW, i)
+            array.remove(slB, i)
+            array.remove(slT, i)
+            bias := 1
 
-// ==== 5) KILL LEVELS PRICE HAS CLOSED THROUGH (broken, not swept) ===
+// ==== 5) KILL SWEEPABLE LEVELS PRICE HAS CLOSED THROUGH =============
 if array.size(hiP) > 0
     for i = array.size(hiP) - 1 to 0
         if close > array.get(hiP, i)
@@ -238,10 +275,14 @@ if isHi
     array.push(hiP, hiWick)
     array.push(hiB, bar_index)
     array.push(hiC, close[2])
+    array.push(hsP, hiWick)
+    array.push(hsB, bar_index)
 if isLo
     array.push(loP, loWick)
     array.push(loB, bar_index)
     array.push(loC, close[2])
+    array.push(lsP, loWick)
+    array.push(lsB, bar_index)
 
 // ============================ BIAS TINT =============================
 bgcolor(showTint and bias != 0 ? color.new(bias == 1 ? cBull : cBear, tintOp) : na)
